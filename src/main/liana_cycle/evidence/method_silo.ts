@@ -201,11 +201,67 @@ const ANSWER_LEAK_PATTERNS: RegExp[] = [
 // magnitude check, e.g. it would already have stripped "d-bp1-m0-52500" clean for an M0 citation).
 // Widening the seat-token vocabulary by shape means every seat now shares that SAME pre-existing,
 // Founder-shipped property symmetrically -- it is not made any looser than it already was for M0.
+// D-BP223-BM0-X009-005-SCOPE, Founder ruling 2026-09-09 15:26 Central (k/cfb481de), verbatim:
+// "SCOPE -- narrow the \d{2,} rule (my recommendation; a method that says '1990s' is not a leak)".
+// MEASURED THIS DISPATCH (D-BP223-BM0-X009-002-ASK3's own reconstruction against the real function):
+// three of `didasko_flagship_ask.js`'s own fixed, tool-authored `taughtBy` boilerplate sentences --
+// never anything Gemini said -- tripped the value-shaped guard on every single deposit, unconditionally:
+//   1. "stages 2-3" (a stage RANGE, meaning "stages 2 through 3") read by the arithmetic pattern as
+//      the subtraction "2 minus 3".
+//   2. "gemini-3.1-pro-preview" (the model's OWN version number, written into every deposit's
+//      provenance line) read by the decimal pattern as a leaked decimal value.
+//   3. "k/265a9815" (a conduit citation of a Founder ruling hash) read by the bare-2-digit-integer
+//      pattern as a leaked integer, because no safe-identifier carve-out covered this citation shape.
+// Same discipline as the four patterns already above: each new carve-out is SHAPE-derived, narrow,
+// and named here, never a blanket loosening of VALUE_SHAPED_LEAK_PATTERNS itself (that array, and
+// the arithmetic/decimal/bare-integer/LaTeX rules it runs, are UNCHANGED by this dispatch -- a real
+// leak of any of those four shapes is still caught the instant it falls outside all eight carve-outs
+// below). Proof both ways -- the three false positives clearing AND a real leak still refused -- is
+// in this dispatch's own return, D-BP223-BM0-X009-005-SCOPE_REPORT.md.
 const SAFE_NUMERIC_IDENTIFIER_PATTERNS: RegExp[] = [
   /d-bp\d+-[a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*-\d+/gi, // dispatch id, ANY seat/slot token by SHAPE (letter-led), e.g. D-BP165-M0-007, D-BP221-BM04-031, D-BP221-BM0-h2cbpib4-051, D-BP214-XO1947-012, D-BP213-XO-41 -- never an enumerated seat list, see D-BP221-BM0-051 comment above
   /(?<!\d)bp\d+(?!\d)/gi, // bare BP session number, e.g. BP149, bp165, or embedded as ..._bp149
   /qid\s*:?\s*#?\d+(?!\d)/gi, // qid citation, prose ("qid 85") or frontmatter ("qid: 85") -- permitted, see field docs
   /\d{4}-\d{2}-\d{2}t[\d:.]+z/gi, // ISO 8601 timestamp
+  // D-BP223-BM0-X009-005-SCOPE, carve-out 5: a conduit citation of a Founder ruling, shape
+  // "k/<hex>" (this estate's own established citation gadget signature, e.g. "k/265a9815"). Requires
+  // the literal "k/" prefix plus 6+ lowercase-hex characters -- a real answer value has no reason to
+  // ever be written in this exact shape, so this cannot swallow a genuine leak by coincidence.
+  /\bk\/[0-9a-f]{6,}\b/gi,
+  // D-BP223-BM0-X009-005-SCOPE, carve-out 6: a versioned software/model identifier, shape
+  // "word-N.N(.N)-word" (e.g. "gemini-3.1-pro-preview", "claude-3.5-sonnet"). Requires a letter-led
+  // token, a hyphen-attached decimal version number, AND a trailing letter-led qualifier segment --
+  // three structural requirements together, none of which an ordinary bare decimal answer value
+  // ("0.2", "52500.75") satisfies, so this narrows the decimal rule's blind spot on model names
+  // without narrowing what it catches in ordinary prose.
+  /\b[a-z][a-z0-9]*(?:-[a-z0-9]+)*-\d+(?:\.\d+)+-[a-z][a-z0-9-]*\b/gi,
+  // D-BP223-BM0-X009-005-SCOPE, carve-out 7: a stage/step/part/etc. RANGE citation, shape
+  // "<range-noun> N-M" (e.g. "stages 2-3", "steps 4-5"). Requires one of a small enumerated set of
+  // range nouns immediately before a tight digit-hyphen-digit pair -- narrower than loosening the
+  // arithmetic pattern's hyphen handling in general, which would also blind it to a real subtraction
+  // leak ("the reserves come to 52-30" has no range noun and is still caught).
+  /\b(?:stages?|steps?|parts?|sections?|phases?|rounds?)\s+\d{1,3}\s*-\s*\d{1,3}\b/gi,
+  // D-BP223-BM0-X009-005-SCOPE, carve-out 8: a bare decade shorthand, Founder's own named example
+  // ("1990s" is not a leak) -- shape "<digits ending in 0>s" as a whole word, e.g. "90s", "1990s",
+  // "2020s". Requires the literal trailing "s" immediately after a digit run ending in zero; a real
+  // answer value coincidentally ending in "0s" with no space is not a shape this campaign's own
+  // corpus produces, and the pre-existing bare-2+-digit rule still catches every other multi-digit
+  // number (e.g. "1990" alone, with no trailing "s", is unaffected and still flagged).
+  /\b\d{1,3}0s\b/gi,
+  // D-BP223-BM0-X009-005-SCOPE, carve-out 9: measured live against the real qid 557/1037/1038
+  // deposits during this dispatch's own acceptance test, AFTER carve-outs 5-8 above already
+  // applied -- a BARE seat/machine-slot token citation with no "D-BP<n>-" dispatch-id prefix at
+  // all, e.g. "S3 concurrence Y005/BM04" in didasko_flagship_ask.js's own taughtBy boilerplate.
+  // This is the SAME seat-token vocabulary the dispatch-id carve-out above already generalizes
+  // over by SHAPE (BM0-BM09, S3, M0/M2/M3/M4, XO, XO1947, Y0-Y14, per this file's own extensive
+  // D-BP221-BM0-051 comment on that pattern) -- it was simply never given a carve-out for the case
+  // where a seat cites ANOTHER seat bare, outside a "D-BP...-<seat>-<n>" dispatch id shape. Same
+  // discipline as that comment's own ruling: SHAPE, never an enumerated name list. Requires 1-3
+  // UPPERCASE letters immediately followed by 1-4 digits with no separator -- a real leaked answer
+  // value has no reason to be glued directly onto 1-3 uppercase letters with zero characters
+  // between them, so this cannot swallow a genuine leak by coincidence; kept uppercase-only
+  // (no /i flag) so it does not widen to match ordinary lowercase prose.
+  /\b[A-Z]{1,3}\d{1,4}\b/g,
 ];
 
 const VALUE_SHAPED_LEAK_PATTERNS: RegExp[] = [

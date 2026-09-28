@@ -3,13 +3,17 @@
 // Called from src/main/index.ts::registerSubstrateAwakensIPC()
 
 import { ipcMain } from 'electron';
-import { createHash, randomBytes } from 'crypto';
+import { randomBytes } from 'crypto';
 import { randomUUID } from 'crypto';
 import { homedir } from 'os';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { getLocalIPs } from '../mobile_pwa';
 import { detectHardwareTier } from '../hardware/ram_detector';
+// D-BP223-BM0-X030-098 (same class as X030-073 P1, XO X030 pick on Founder k/0a8d1c96): the handshake used to send
+// sha256(email) UNSALTED to the relay every 60 s (email_hash, and peer_id was its first 16 hex). It now uses the per-install
+// SALTED beacon hash (salt local, never sent) and obeys the one "Share presence with my other machines" switch.
+import { beaconEmailHashOrNull } from '../identity/beacon_email_hash';
 
 const RELAY_BASE_PRIMARY = process.env.SUBSTRATE_AWAKENS_RELAY ?? 'https://relay.lianabanyan.com/functions/v1';
 const RELAY_BASE_FALLBACK = 'https://ruuxzilgmuwddcofqecc.supabase.co/functions/v1';
@@ -29,9 +33,33 @@ interface SubstrateAwakensState {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-function sha256hex(input: string): string {
-  return createHash('sha256').update(input).digest('hex');
+/** X030-098: the relay-facing identity for a handshake. email_hash is the per-install salted hash (null when the salt is
+ *  unusable, and then no email hash is sent at all, never the unsalted one); peer_id derives from that salted value, or is
+ *  random when there is none. Nothing here is reversible to the email by guessing. */
+export function buildSubstrateAwakensIdentity(email: string, saltPath?: string): { emailHash: string | null; peerId: string } {
+  const emailHash = saltPath === undefined ? beaconEmailHashOrNull(email) : beaconEmailHashOrNull(email, saltPath);
+  const peerId = (emailHash ? emailHash.slice(0, 16) : randomBytes(8).toString('hex')) + '-sa';
+  return { emailHash, peerId };
 }
+
+/** X030-098: the ONE presence switch (peer_server.ts getPresenceShareState). Unreadable = OFF (fail closed). */
+function defaultIsPresenceSharingOn(): boolean {
+  try {
+    return (require('./peer_server') as typeof import('./peer_server')).getPresenceShareState().enabled === true;
+  } catch {
+    return false;
+  }
+}
+
+export interface SubstrateAwakensDeps {
+  /** Tests only: override the presence switch read. */
+  isPresenceSharingOn?: () => boolean;
+  /** Tests only: override the beacon salt file path. */
+  saltPath?: string;
+}
+
+export const PRESENCE_OFF_HANDSHAKE_MESSAGE =
+  '"Share presence with my other machines" is off, so this machine was not announced to the relay. Turn it on to join the live event.';
 
 function isRetryableStatus(status: number): boolean {
   return status === 502 || status === 503 || status === 504;
@@ -95,9 +123,11 @@ function stopHeartbeat(): void {
   }
 }
 
-function startHeartbeat(peanutRoll: () => object): void {
+function startHeartbeat(peanutRoll: () => object, isPresenceSharingOn: () => boolean): void {
   stopHeartbeat();
   heartbeatTimer = setInterval(async () => {
+    // X030-098: the switch is read on every tick; turned off = the heartbeat stops and nothing more is sent.
+    if (!isPresenceSharingOn()) { stopHeartbeat(); return; }
     try {
       await relayPost('/wan-relay-publish', peanutRoll());
     } catch {
@@ -108,7 +138,8 @@ function startHeartbeat(peanutRoll: () => object): void {
 
 // ── IPC handlers ──────────────────────────────────────────────────────────────
 
-export function registerSubstrateAwakensIPC(): () => void {
+export function registerSubstrateAwakensIPC(deps: SubstrateAwakensDeps = {}): () => void {
+  const isPresenceSharingOn = deps.isPresenceSharingOn ?? defaultIsPresenceSharingOn;
   // ── substrate-awakens:register ──────────────────────────────────────────
   ipcMain.handle(
     'substrate-awakens:register',
@@ -138,9 +169,11 @@ export function registerSubstrateAwakensIPC(): () => void {
     'substrate-awakens:handshake',
     async (_event, { token, email, displayName }: { token: string; email: string; displayName: string }) => {
       try {
+        if (!isPresenceSharingOn()) {
+          return { success: false, presenceSharingOff: true, error: PRESENCE_OFF_HANDSHAKE_MESSAGE };
+        }
         const sid = randomBytes(16).toString('hex');
-        const emailHash = sha256hex(email);
-        const peerId = emailHash.slice(0, 16) + '-sa';
+        const { emailHash, peerId } = buildSubstrateAwakensIdentity(email, deps.saltPath);
         const lanAddresses = getLocalIPs();
         const hardwareTier = detectHardwareTier();
         const relaySessionId = randomUUID();
@@ -152,7 +185,7 @@ export function registerSubstrateAwakensIPC(): () => void {
           b: { token, displayName },
           ts: Date.now(),
           peer_id: peerId,
-          email_hash: emailHash,
+          ...(emailHash ? { email_hash: emailHash } : {}),
           lan_addresses: lanAddresses,
           relay_session_id: relaySessionId,
           capabilities: {
@@ -179,7 +212,7 @@ export function registerSubstrateAwakensIPC(): () => void {
           joinedAt: new Date().toISOString(),
         };
         writeState(state);
-        startHeartbeat(peanutRoll);
+        startHeartbeat(peanutRoll, isPresenceSharingOn);
 
         return { success: true, peerId, displayName };
       } catch (err) {

@@ -32,6 +32,9 @@ import { app } from 'electron';
 import type { ConstellationPeer } from './mic_types';
 import { signAnnouncePayload, peekAnnouncePayload, verifyAnnounceFrame } from './announce_frame';
 import { isUnauthenticatedLanDiscoveryAllowed } from './mesh_trust_settings';
+// D-BP223-BM0-X010-004-MESHPLUMB: enrollment registry gate, checked FIRST in the beacon handler
+// below -- see resolveEnrolledBeaconKey()'s own header comment.
+import { lookupEnrolledPeerPublicKey } from '../thorax/peer_enrollment_registry';
 
 export const UDP_BEACON_PORT = 7475;
 const BEACON_INTERVAL_MS = 30_000;
@@ -122,9 +125,36 @@ export function lookupKnownPeerPublicKey(peerId: string): string | undefined {
   return saved.find((p) => p.id === peerId)?.public_key_hex;
 }
 
+/**
+ * D-BP223-BM0-X010-004-MESHPLUMB: resolves this machine's enrollment-registry key for an
+ * announcing peer, if any. Checked FIRST by the beacon handler below, ahead of
+ * lookupKnownPeerPublicKey()'s own beacon-learned (trust-on-first-use) store -- HARDWIRE-03's
+ * actual gap was that no stronger tier than TOFU existed anywhere on this path; this is that
+ * tier. An UNENROLLED peer_id falls through to the pre-existing TOFU resolution unchanged (no
+ * existing test in this repo covers the beacon handler directly, but the same additive
+ * discipline as peer_server.ts's sibling change is kept here for consistency and so a live
+ * install's un-enrolled LAN peers see no behavior change until the Founder actually enrolls
+ * someone).
+ */
+function resolveEnrolledBeaconKey(peerId: string): string | undefined {
+  try {
+    const registryPath = join(app.getPath('userData'), 'peer_enrollment_registry.json');
+    return lookupEnrolledPeerPublicKey(registryPath, peerId) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function getPeerInfo(peerAddress: string): Promise<Partial<ConstellationPeer> | null> {
   try {
+    // D-BP223-BM0-X030-073 P2: /api/info refuses unsigned requests; sign a fresh route frame (header x-mnem-signed-frame).
+    const headers: Record<string, string> = {};
+    let senderPeerId: string | undefined;
+    try { senderPeerId = (require('./peer_server') as typeof import('./peer_server')).getRegisteredPeerId() ?? undefined; } catch { senderPeerId = undefined; }
+    const signed = signAnnouncePayload('api-info-' + Date.now(), { route: '/api/info', issued_ms: Date.now(), ...(senderPeerId ? { sender_peer_id: senderPeerId } : {}) });
+    if (signed) headers['x-mnem-signed-frame'] = signed.signedHex;
     const res = await fetch(`http://${peerAddress}/api/info`, {
+      headers,
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return null;
@@ -218,7 +248,13 @@ export function startUdpBeacon(
           return; // ignore own beacons and unknown packets
         }
         const peerAddress = `${rinfo.address}:${packet.port ?? 7474}`;
-        const claimedKey = peeked.claimedPublicKeyHex;
+        // D-BP223-BM0-X010-004-MESHPLUMB: enrolled key wins over the self-declared key when the
+        // announcing peer_id IS enrolled -- an enrolled peer whose signature fails against its
+        // ENROLLED key is refused below even if it would verify against its own self-declared
+        // key (a rotated-but-not-re-enrolled key, or a forged announcement). An unenrolled peer
+        // falls through to the pre-existing self-declared-key verification, unchanged.
+        const enrolledKey = resolveEnrolledBeaconKey(packet.peer_id);
+        const claimedKey = enrolledKey ?? peeked.claimedPublicKeyHex;
         if (claimedKey) {
           const verified = verifyAnnounceFrame(raw, claimedKey);
           if (!verified.valid) {
@@ -226,14 +262,16 @@ export function startUdpBeacon(
             // unauthenticated-LAN-discovery opt-out below (that setting only governs the
             // ABSENCE of a signature, never one that is present and fails).
             console.warn(
-              `[ConstellationDiscovery] REFUSED beacon from ${packet.peer_id.slice(0, 8)}… at ${peerAddress}: ${verified.reason}`,
+              `[ConstellationDiscovery] REFUSED beacon from ${packet.peer_id.slice(0, 8)}… at ${peerAddress}` +
+              `${enrolledKey ? ' (ENROLLED peer, key mismatch or forged signature)' : ''}: ${verified.reason}`,
             );
             return;
           }
           const peer = buildPeerFromPacket(packet as BeaconPacket, peerAddress, claimedKey, 'verified');
           addOrUpdatePeer(peer);
           console.log(
-            `[ConstellationDiscovery] UDP: discovered LAN peer ${packet.peer_id.slice(0, 8)}… at ${peerAddress} (signature VERIFIED)`,
+            `[ConstellationDiscovery] UDP: discovered LAN peer ${packet.peer_id.slice(0, 8)}… at ${peerAddress} ` +
+            `(signature VERIFIED${enrolledKey ? ', ENROLLED' : ''})`,
           );
           return;
         }

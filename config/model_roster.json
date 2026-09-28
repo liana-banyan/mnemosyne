@@ -1,0 +1,67 @@
+{
+  "_comment": "D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER. Founder ruling 2026-09-08T02:32:58Z, verbatim: 'Claude does pricing per model, and includes whatever iteration it is, so Haiku4.7 was replaced with 4.8 etc'. This file is the SINGLE source of truth for every Anthropic model id this codebase dispatches at a real network call site -- vendor model ids ROTATE by iteration, and a hardcoded id baked into TypeScript source drifts silently out of sync with both the vendor's own catalog and config/substrate_price_table.json's rate rows. Code reads this file via src/main/model_roster.ts's getRosterModelId(role); no file listed in 'sites_migrated' below still carries the corresponding literal. Rule 66: this is a new file, no prior sibling exists.",
+  "schema_version": 1,
+  "roster_version": "2026-09-08-v2",
+  "roles": {
+    "brain.opus": {
+      "model_id": "claude-opus-5",
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "fetched_utc": "2026-09-08T03:13:50Z",
+      "replaces": "claude-opus-4-7",
+      "note": "Founder ruling 2026-09-08T03:18:39Z (ticked, via the conduit; Sonnet's own note on the pairing carried the Founder's 'Clearly yes'). Source is the vendor pricing page the Founder pasted at 03:13:50Z: Claude Opus 5 prices the same as Opus 4.7, $5/$25 per MTok, and adds a fast mode Opus 4.7 does not have. The Founder's stated reason for making this switch now: 'this is WHY we have that Banyan Metric Charts that show how each model performs and costs vs other models and setups' -- i.e. the roster swap is meant to be measured, not just assumed better. PRIOR NOTE: Live WebFetch of the vendor's own Model Pricing table (dispatch D-BP223-M0-h2cbpo68-MODEL_ROSTER, 2026-09-08T02:40Z) lists 'Claude Opus 4.7' at $5/$25 per MTok, not retired, not superseded by a newer id in this codebase's dispatch path -- re-confirms brain_registry.ts's pre-existing DEFAULT_BRAINS opus entry unchanged. The vendor page also lists newer Opus 5 / 4.8 rows, but per that dispatch's explicit instruction ('only if the page shows a newer iteration than the ones in code; otherwise keep them and record the source') claude-opus-4-7 was kept as-is because it was still a live, non-retired vendor SKU at that time -- upgrading the DEFAULT flagship id to Opus 5/4.8 was flagged as a product decision for the Founder, not a stale-id correction that dispatch's mandate covered. That Founder decision is what this entry now records.",
+      "history": [
+        {
+          "roster_version": "2026-09-08-v1",
+          "model_id": "claude-opus-4-7",
+          "fetched_utc": "2026-09-08T02:40:00Z",
+          "replaces": null,
+          "note": "Live WebFetch of the vendor's own Model Pricing table (dispatch D-BP223-M0-h2cbpo68-MODEL_ROSTER, 2026-09-08T02:40Z) lists 'Claude Opus 4.7' at $5/$25 per MTok, not retired, not superseded by a newer id in this codebase's dispatch path -- re-confirms brain_registry.ts's pre-existing DEFAULT_BRAINS opus entry unchanged. The vendor page also lists newer Opus 5 / 4.8 rows, but per this dispatch's explicit instruction ('only if the page shows a newer iteration than the ones in code; otherwise keep them and record the source') claude-opus-4-7 is kept as-is because it is still a live, non-retired vendor SKU today -- upgrading the DEFAULT flagship id to Opus 5/4.8 is a product decision for the Founder, not a stale-id correction this ticket's mandate covers."
+        }
+      ]
+    },
+    "brain.sonnet": {
+      "model_id": "claude-sonnet-5",
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "fetched_utc": "2026-09-08T03:13:50Z",
+      "replaces": "claude-sonnet-4-6",
+      "note": "Founder ruling 2026-09-08T03:18:39Z (Sonnet's own note on this pairing: 'Clearly yes'). Source is the vendor pricing page the Founder pasted at 03:13:50Z: Claude Sonnet 5 is now permanently priced at $2/$10 per MTok, one third cheaper than Sonnet 4.6's $3/$15. The Founder's stated reason for making this switch now: 'this is WHY we have that Banyan Metric Charts that show how each model performs and costs vs other models and setups' -- the point is to measure the swap's real cost/performance delta, not assume it. PRIOR NOTE: Live WebFetch (dispatch D-BP223-M0-h2cbpo68-MODEL_ROSTER, 2026-09-08T02:40Z) lists 'Claude Sonnet 4.6' at $3/$15 per MTok, not retired. Kept as-is for the same reason as brain.opus above -- a live, non-retired SKU, not a stale id. Sonnet 5 ($2/$10) is also live on the vendor page and already used elsewhere in this codebase (federation/bishop_dispatch_handler.ts's DEFAULT_MODEL, out of this roster's three savings-meter roles) but swapping brain.sonnet's DEFAULT_BRAINS entry to Sonnet 5 was flagged as a product decision, not made by that ticket. That Founder decision is what this entry now records.",
+      "history": [
+        {
+          "roster_version": "2026-09-08-v1",
+          "model_id": "claude-sonnet-4-6",
+          "fetched_utc": "2026-09-08T02:40:00Z",
+          "replaces": null,
+          "note": "Live WebFetch (dispatch D-BP223-M0-h2cbpo68-MODEL_ROSTER, 2026-09-08T02:40Z) lists 'Claude Sonnet 4.6' at $3/$15 per MTok, not retired. Kept as-is for the same reason as brain.opus above -- a live, non-retired SKU, not a stale id. Sonnet 5 ($2/$10) is also live on the vendor page and already used elsewhere in this codebase (federation/bishop_dispatch_handler.ts's DEFAULT_MODEL, out of this roster's three savings-meter roles) but swapping brain.sonnet's DEFAULT_BRAINS entry to Sonnet 5 is a product decision, not made by this ticket."
+        }
+      ]
+    },
+    "brain.haiku": {
+      "model_id": "claude-haiku-4-5",
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "fetched_utc": "2026-09-08T02:40:00Z",
+      "replaces": "claude-haiku-4-7",
+      "note": "THE ACTUAL PRODUCT FIX this ticket exists to make. ai_dispatch_ipc.ts's CHEAP_CLOUD_BRAIN (TIER 3 cheap-cloud rung) and agent_probe.ts's health-check ping were dispatching 'claude-haiku-4-7' -- a string that does NOT appear anywhere on the vendor's own live pricing page (independently re-confirmed by THIS dispatch's own fresh WebFetch of https://platform.claude.com/docs/en/about-claude/pricing at 2026-09-08T02:40Z, corroborating the prior dispatch D-BP223-M0-h2cbpo68-032's two independent fetches at 02:14Z/02:15Z that same day: Haiku family present on the page is 'Claude Haiku 4.5' at $1/$5 per MTok and 'Claude Haiku 3.5 (retired...)' at $0.80/$4 -- NO 'Claude Haiku 4.7' row and NO 'Claude Haiku 4.8' row exist on the page at all). The Founder's own verbal recollection this dispatch was given ('Haiku4.7 was replaced with 4.8') does NOT match the live page -- per this dispatch's explicit instruction to trust the page over the sentence, brain.haiku is set to claude-haiku-4-5, the page's actual current (non-retired) Haiku SKU, not claude-haiku-4-8. claude-haiku-4-5 is ALREADY a priced row in config/substrate_price_table.json ($1/$5, effective_from 2026-01-01), so this single roster correction also resolves the prior dispatch's 'unpriced_models' entry for claude-haiku-4-7 going forward: new TIER-3 cheap-cloud dispatches will price correctly instead of resolving UNMEASURED. The claude-haiku-4-7 unpriced_models entry and its price-table absence are DELIBERATELY NOT deleted (Rule 66 / HIVI discipline -- the historical record that the product WAS dispatching an unpriced ghost SKU stays on file); substrate_savings_receipt.test.ts's existing test (c) for claude-haiku-4-7 is therefore still correct and left unchanged. This is a Founder-visible finding, not a unilateral model-tier upgrade: the Founder's own recollection of '4.8' could not be verified and should be raised back to him -- see the dispatch's own Return doc."
+    }
+  },
+  "sites_migrated": [
+    "src/main/ai_dispatch_ipc.ts (CHEAP_CLOUD_BRAIN.brain_id/model_id -> brain.haiku)",
+    "src/main/agent_probe.ts (health-check ping model -> brain.haiku)",
+    "src/main/brain_registry/brain_registry.ts (DEFAULT_BRAINS opus entry -> brain.opus, sonnet entry -> brain.sonnet)",
+    "src/main/ai-providers/anthropic-client.ts (BISHOP_DEFAULT_MODEL -> brain.opus)",
+    "src/main/hearth/conjunction/backend_adapters/opus_claude_adapter.ts (OPUS_MODEL -> brain.opus)",
+    "src/main/dr_m_orchestrator/brain_swap.ts (CLAUDE_MODEL const + ClaudeBrainAdapter.brain_id -> brain.sonnet)",
+    "src/main/dr_m_orchestrator/court_packages.ts (adjudicator_council member model_id -> brain.sonnet)",
+    "src/main/dr_m_orchestrator/dispatch_loop.ts (escalation_brain comparison literal -> brain.sonnet)",
+    "src/main/tier2/flagship_escalate.ts (client.messages.create model + result.model + a log line -> brain.sonnet)"
+  ],
+  "sites_deliberately_not_migrated": [
+    "src/main/concurrency_probe.ts:121 (model: 'claude-sonnet-4-5') -- a capacity probe, not a savings-meter dispatch path, and a DIFFERENT model id (sonnet-4-5, not one of this roster's three roles). Out of this ticket's scope per the mission brief's own focus on ai_dispatch_ipc.ts's dispatchViaBrain() ladder.",
+    "src/main/wave_generator.ts:552 (model: 'claude-sonnet-4-5') -- HARDWIRE mesh SEG dispatch, same reasoning as concurrency_probe.ts above: different model id, not wired to emitSavingsReceipt (confirmed by the prior dispatch's own grep census in D-BP223-M0-h2cbpo68-032).",
+    "src/main/federation/bishop_dispatch_handler.ts:547 (DEFAULT_MODEL = 'claude-sonnet-5') -- Bishop's own SEG-dispatch default, a live current-generation id already, not one of the three brain_registry/CHEAP_CLOUD_BRAIN roles this roster governs, and not part of the cloud_escalation savings-meter path.",
+    "src/renderer/components/BrainSwapSelector.tsx:41-43 (three useState<string>('claude-sonnet-4-6') initial values) -- RENDERER-PROCESS React state, immediately overwritten by an async window.amplify IPC call to the main process's real brain_registry on mount; these are pre-fetch placeholder text, not a dispatch decision. model_roster.ts is a Node fs-based loader built for the main process -- the renderer cannot read it directly without a new IPC bridge, which is a larger architecture change than a literal-id swap and out of this ticket's scope. Left as a named gap, not silently missed.",
+    "src/renderer/hearth/conjunction/ConjunctionPanel.tsx:75,77 (modelId: 'claude-opus-4-7' / 'claude-haiku-4-7' UI option definitions) -- same renderer-process constraint as BrainSwapSelector.tsx above. Per D-BP223-M0-h2cbpo68-032's own census, the 'bishop_cheap'/Haiku option (id 'bishop_cheap', label 'Haiku 4.7') has NO backend adapter behind it at all (no haiku_claude_adapter.ts exists) -- it is dead/unwired UI, not a real dispatch site, so its stale label is cosmetic, not a pricing defect. The 'bishop_flagship'/Opus option IS wired (to opus_claude_adapter.ts, migrated above) -- its UI modelId label could in principle drift from OPUS_MODEL's roster-sourced value now, which is the one real, if minor, gap this exclusion leaves open; flagged here rather than silently left unnoticed.",
+    "src/renderer/hearth/conjunction/types.ts and src/main/hearth/conjunction/types.ts comments -- doc-comment examples only, no dispatch site behind them.",
+    "*.superseded.*.ts files anywhere in the tree -- dead code by this codebase's own Rule 66 convention, never executed.",
+    "*.test.ts files -- test fixtures intentionally use literal ids to describe what they are asserting against; migrating them to read the roster would make a test unable to independently catch a roster regression."
+  ]
+}

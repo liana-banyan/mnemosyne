@@ -15,6 +15,20 @@ interface FaqEntry {
 }
 
 const FAQ_ENTRIES: FaqEntry[] = [
+  // D-BP223-BM0-X029-018 (Founder k/0ee57a97): the two questions people ask first. Text is shared
+  // verbatim with FAQCard.tsx and the mnemosynec.org download page FAQ.
+  {
+    id: 'what-will-this-do-to-my-machine',
+    question: "What will this do to my machine?",
+    tldr: "It still works, and you, the user, come first. Background AI work pauses while you use the computer.",
+    full: "It still works, and you, the user, have precedence.\n\nMnemosyneC keeps a library of answers on your computer and can run a small AI model on it. Most answers come straight from the library, with no AI model at all. On one of our own desktops (8 GB graphics card) it answered 300 test questions in 3.78 milliseconds each, with zero AI model calls (measured September 16, 2026).\n\nWhen it does use a model, the small model we run on our 8 GB desktops (gemma2:2b) took about 1.8 GB of graphics memory when we measured it on an 8 GB card. On a different card, with longer questions, we measured about 3.3 GB.\n\n\"You come first\" is ON by default. While you are using the computer, background AI work pauses: answering questions for other members, warm-ups, test runs, and Homework. It picks back up when you step away. Sharing small files with other members keeps going, because it uses almost nothing. It never opens a window, never takes focus, and never touches your web browser.\n\nTo turn it off: Settings, then \"You come first\", then OFF.",
+  },
+  {
+    id: 'can-i-still-use-my-computer',
+    question: "Can I still use my computer?",
+    tldr: "Yes. You have precedence. It pauses its background work while you use the computer and resumes when you step away.",
+    full: "Yes. It still works, and you have precedence.\n\nWith \"You come first\" ON (the default), MnemosyneC pauses its background AI work when:\n- you have typed or moved the mouse in the last 2 minutes,\n- a full-screen video, game, or presentation is in front, or\n- your graphics card does not have room for the AI model right now, or its free memory cannot be read.\n\nIt resumes on its own once the computer has been idle. Work that has to wait stays in line, so nothing is lost. Questions you ask it yourself are never paused, because you asked them.\n\nIt never pops up windows, never steals focus, and never touches your browser, whether the setting is on or off.\n\nThe check for a full-screen video or game takes about a third of a second in a hidden background process (measured September 16, 2026). It only runs after you have been away from the keyboard and mouse for 2 minutes and there is work waiting.\n\nOne thing it cannot see yet: a video playing in a normal, not full-screen, window while you don't touch the mouse. If that ever stutters, make the video full screen, or wiggle the mouse.\n\nWant it to run at full speed instead? Open Settings and turn \"You come first\" OFF. Anything it produces while you are using the computer is then labeled \"desktop in use\".",
+  },
   {
     id: 'what-is-mnemosyne',
     question: 'What is MnemosyneC™?',

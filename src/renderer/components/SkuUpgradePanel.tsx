@@ -435,6 +435,17 @@ export function SkuUpgradePanel({
   const [overrideActive, setOverrideActive] = useState(false);
   const [effectiveModel, setEffectiveModel] = useState<string>('');
   const [autoDetectedModel, setAutoDetectedModel] = useState<string>('');
+  // D-BP223-BM0-X010-020-KAPPA: this panel's footer used to hardcode "Cohen's Kappa 1.000",
+  // a fabricated number flagged by BM0/X009 (outbox #775, 2026-09-09) and confirmed live-routed
+  // (SettingsTab -> SkuUpgradePanel, mounted by CleanShell.tsx) during this dispatch's own
+  // render-tree audit -- unlike ProofAccordion.tsx's copy of the same claim, which was found to
+  // be unrouted dead code. Wired to the same measured receipt as ProofAccordion.tsx.
+  const [kappaCaption, setKappaCaption] = useState<string>('Cohen’s Kappa: not yet measured');
+  // D-BP223-BM0-X010-026-HUMANKAPPA: Rule 66 sibling -- the REAL AI-vs-human Kappa (Founder's
+  // own hand-labeled 50-item sheet vs. the free path, same items, out-of-sample). Shown beside
+  // the machine-vs-machine caption above, per the Founder's own tick (k/15d5f3f9): "Kappa
+  // computed and shown beside the first."
+  const [kappaHumanCaption, setKappaHumanCaption] = useState<string>('Human vs. free path Kappa: not yet measured');
 
   const upgradeActiveRef = useRef(false);
   // Holds cleanup callbacks for IPC listeners registered during upgrade
@@ -443,6 +454,49 @@ export function SkuUpgradePanel({
   const lastProgressTimeRef = useRef<number>(0);
 
   // ── On mount: load tier + model state ─────────────────────────────────────
+
+  // D-BP223-BM0-X010-020-KAPPA: load the measured kappa receipt for the footer caption below.
+  useEffect(() => {
+    let cancelled = false;
+    const amplify = (window as Window & typeof globalThis).amplify as typeof window.amplify | undefined;
+    if (!amplify?.getKappaReceipt) return;
+    amplify
+      .getKappaReceipt()
+      .then((r) => {
+        if (cancelled || !r) return;
+        if (r.measured && r.primary) {
+          setKappaCaption(
+            `Cohen’s Kappa: ${r.primary.kappa.toFixed(3)} (measured, n=${r.primary.n})`
+          );
+        } else {
+          setKappaCaption('Cohen’s Kappa: not yet measured');
+        }
+      })
+      .catch(() => { /* leave the not-yet-measured default */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  // D-BP223-BM0-X010-026-HUMANKAPPA: load the REAL human-vs-machine kappa receipt, Rule 66
+  // sibling of the effect immediately above.
+  useEffect(() => {
+    let cancelled = false;
+    const amplify = (window as Window & typeof globalThis).amplify as typeof window.amplify | undefined;
+    if (!amplify?.getKappaHumanReceipt) return;
+    amplify
+      .getKappaHumanReceipt()
+      .then((r) => {
+        if (cancelled || !r) return;
+        if (r.measured && r.primary) {
+          setKappaHumanCaption(
+            `Human vs. free path Kappa: ${r.primary.kappa.toFixed(3)} (measured, n=${r.primary.n})`
+          );
+        } else {
+          setKappaHumanCaption('Human vs. free path Kappa: not yet measured');
+        }
+      })
+      .catch(() => { /* leave the not-yet-measured default */ });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -876,7 +930,10 @@ export function SkuUpgradePanel({
                   </div>
                 ))}
                 <div style={{ fontSize: 10, color: '#1e293b', marginTop: 6 }}>
-                  BP074 · Cohen's Kappa 1.000 · Banyan Metric™
+                  BP074 · {kappaCaption} · Banyan Metric™
+                </div>
+                <div style={{ fontSize: 10, color: '#1e293b', marginTop: 2 }}>
+                  {kappaHumanCaption}
                 </div>
               </div>
 

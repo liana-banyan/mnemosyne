@@ -18,6 +18,7 @@ import {
 import { resolve } from 'path';
 import type { SubstrateRecord, SubstrateLocalIndex } from './substrate_router';
 import { dag_soccerball_lookup as _dagLookupForFetch } from 'caithedral-core/tools/dag_soccerball';
+import { isNetworkFeatureOn } from './startup/network_feature_settings';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -94,8 +95,20 @@ export class FederationClient {
     this.inboundHook = fn;
   }
 
-  constructor(index: SubstrateLocalIndex) {
+  // D-BP223-BM0-X031-024: lianabanyan.com traffic (health check, record push, record pull) is OFF until the user turns
+  // on "Sync my substrate with lianabanyan.com" (startup/network_feature_settings.ts). Read once at construction; a
+  // change takes effect at the next app start. LAN peer discovery and the LAN announce server are not governed by it.
+  private readonly cooperativeSyncOn: boolean;
+  // D-BP223-BM0-X031-027: the LAN listener on :11481 (serves up to 50 local records to any LAN host, no auth) and the
+  // LAN probe (every 30 s) are OFF until the user turns on lanShareListener / lanPeerProbe. Read once at construction.
+  private readonly lanShareOn: boolean;
+  private readonly lanProbeOn: boolean;
+
+  constructor(index: SubstrateLocalIndex, opts: { settingsPath?: string } = {}) {
     this.index = index;
+    this.cooperativeSyncOn = isNetworkFeatureOn('syncWithLianaBanyan', opts.settingsPath);
+    this.lanShareOn = isNetworkFeatureOn('lanShareListener', opts.settingsPath);
+    this.lanProbeOn = isNetworkFeatureOn('lanPeerProbe', opts.settingsPath);
     if (!existsSync(FEDERATION_DATA_DIR)) {
       mkdirSync(FEDERATION_DATA_DIR, { recursive: true });
     }
@@ -113,19 +126,27 @@ export class FederationClient {
     this.online = await this._checkConnectivity();
 
     // Start peer announce server (so other local AMPLIFY instances find us)
-    await this._startAnnounceServer();
+    // X031-027: only when the user turned on lanShareListener; otherwise nothing listens on :11481.
+    if (this.lanShareOn) {
+      await this._startAnnounceServer();
+    }
 
     // Sync timers
     this.syncTimer = setInterval(() => this._syncCycle(), ONLINE_SYNC_INTERVAL_MS);
-    this.peerScanTimer = setInterval(() => this._scanLocalPeers(), PEER_SCAN_INTERVAL_MS);
+    // X031-027: the LAN probe runs only when the user turned on lanPeerProbe.
+    if (this.lanProbeOn) {
+      this.peerScanTimer = setInterval(() => this._scanLocalPeers(), PEER_SCAN_INTERVAL_MS);
+    }
 
     // Initial syncs
     if (this.online) {
       this._syncCycle().catch(() => {});
     }
-    this._scanLocalPeers().catch(() => {});
+    if (this.lanProbeOn) {
+      this._scanLocalPeers().catch(() => {});
+    }
 
-    console.log(`[Federation] Started. Online=${this.online}, peers=${this.peers.size}`);
+    console.log(`[Federation] Started. Online=${this.online}, peers=${this.peers.size}, lanShareListener=${this.lanShareOn}, lanPeerProbe=${this.lanProbeOn} (default off)`);
   }
 
   async stop(): Promise<void> {
@@ -139,6 +160,7 @@ export class FederationClient {
   // ─── Queue a write (from local query router ─ new records learned locally) ─
 
   queueWrite(record: SubstrateRecord): void {
+    if (!this.cooperativeSyncOn) return; // X031-024: nothing is queued for lianabanyan.com while sync is off
     this.pendingWrites.push({ record, ts: new Date().toISOString() });
     // Cap queue at 500 pending writes
     if (this.pendingWrites.length > 500) this.pendingWrites.shift();
@@ -177,6 +199,8 @@ export class FederationClient {
   // ─── Peer-sync: exchange substrate records with a local peer ────────────────
 
   async syncWithPeer(peer: Peer): Promise<number> {
+    // X031-027: no outbound LAN connection (e.g. to a peer remembered in peers.json) unless lanPeerProbe is on.
+    if (!this.lanProbeOn) return 0;
     return new Promise<number>((resolve) => {
       let exchanged = 0;
       try {
@@ -245,6 +269,7 @@ export class FederationClient {
   // ─── Private — sync cycle ────────────────────────────────────────────────────
 
   private async _syncCycle(): Promise<void> {
+    if (!this.cooperativeSyncOn) return; // X031-024: default off
     this.online = await this._checkConnectivity();
     if (!this.online) return;
 
@@ -507,6 +532,7 @@ export class FederationClient {
   // ─── Private — connectivity ──────────────────────────────────────────────────
 
   private async _checkConnectivity(): Promise<boolean> {
+    if (!this.cooperativeSyncOn) return false; // X031-024: no lianabanyan.com health request while sync is off
     try {
       const res = await fetch(CONNECTIVITY_CHECK_URL, {
         signal: AbortSignal.timeout(5000),

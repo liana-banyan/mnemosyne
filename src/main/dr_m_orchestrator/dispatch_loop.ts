@@ -28,6 +28,9 @@ import type { CourtPackageLibrary, CouncilPackageName } from './court_packages';
 import type { RelayClient } from '../federation/relay-client';
 // MOUNTAIN_1b_ADDITION: PLOW LOOP default Council path
 import { runPlowLoop } from './plow/plow_loop';
+// D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: escalation_brain's recorded model id
+// now reads config/model_roster.json's 'brain.sonnet' role instead of a literal 'claude-sonnet-4-6'.
+import { getRosterModelId } from '../model_roster';
 
 // ─── Dispatch mode ────────────────────────────────────────────────────────────────
 
@@ -266,7 +269,7 @@ export function createDispatchLoop(
             variance: councilResult.variance,
             variance_threshold: pkg.variance_threshold,
             escalated: councilResult.escalated ? 1 : 0,
-            escalation_brain: councilResult.escalated ? 'claude-sonnet-4-6' : null,
+            escalation_brain: councilResult.escalated ? getRosterModelId('brain.sonnet') : null,
             aggregate_answer_excerpt: councilResult.result.slice(0, 500),
             total_latency_ms: latencyMs,
             substrate_context_bytes: substrateContext.context_size_bytes,

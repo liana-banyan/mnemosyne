@@ -206,9 +206,17 @@ let _cachedPeerId: string | null = null;
 
 /** Boot-time init — call before mesh / relay poll. */
 export async function initializeLocalPeerKeypair(): Promise<{ peerId: string; publicKeyHex: string }> {
-  const kp = ensureLocalPeerKeypair();
-  _cachedPeerId = kp.peerId;
-  return kp;
+  try {
+    const kp = ensureLocalPeerKeypair();
+    _cachedPeerId = kp.peerId;
+    return kp;
+  } catch (err) {
+    // D-BP223-BM0-X030-098: the keypair module now REFUSES a plain-hex private key when Windows encrypted storage is
+    // unavailable. Boot must not stop for that: run without that identity, on the same legacy fallback id
+    // getStablePeerId() already uses when the keypair is unavailable. publicKeyHex is empty (no identity to publish).
+    console.warn('[D3] running without the local peer keypair identity:', err instanceof Error ? err.message : String(err));
+    return { peerId: getStablePeerId(), publicKeyHex: '' };
+  }
 }
 
 export async function getStablePeerIdAsync(): Promise<string> {

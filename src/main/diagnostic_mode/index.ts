@@ -14,6 +14,7 @@ import { app } from 'electron';
 import { getStablePeerId } from '../federation/peer-discovery';
 import { SIG_HEX_LEN } from '../thorax/sign_verify';
 import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
+import { isNetworkFeatureOn } from '../startup/network_feature_settings';
 
 // ─── Module-level state (consumed by startup_diagnostic + relay_answer_poller_state command) ──
 
@@ -380,8 +381,14 @@ function scheduleNextPoll(peerId: string): void {
   }, intervalMs);
 }
 
-export function startDiagnosticPoller(): void {
+export function startDiagnosticPoller(opts: { settingsPath?: string } = {}): void {
   if (pollerStarted) return;
+  // D-BP223-BM0-X031-027 (Founder, 2026-09-17: "Turn those OFF by default first"): the 60 s check-in timer is not armed
+  // unless the user turned on diagnosticCheckin. Takes effect at next app start.
+  if (!isNetworkFeatureOn('diagnosticCheckin', opts.settingsPath)) {
+    console.log('[X031-027] diagnostic mode poller NOT started: diagnosticCheckin is off (default)');
+    return;
+  }
   pollerStarted = true;
   const peerId = getStablePeerId();
   console.log(`[diagnostic_mode] Diagnostic poller started for peer ${peerId.slice(0, 8)}`);

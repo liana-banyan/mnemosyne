@@ -78,13 +78,18 @@
 // explicitly and correctly disclaims "Electricity and hardware amortization are real and NOT
 // measured by this table" -- that caveat is read live from the row's own `note` field and carried
 // into `actual_reason` below, never dropped). The counterfactual is priced against
-// `substrate_price_table.json`'s own `default_counterfactual_model` (currently `claude-sonnet-5`,
-// $2.00/$10.00 per MTok input/output, verified_on 2026-08-20, verified_by
-// D-BP160-M0-033/BISHOP/M0, source_url recorded on that row) -- a NAMED model at a NAMED,
-// SOURCED, DATED rate, read live every call, never a guess and never silently re-derived from a
-// different number. A run whose token counts were not measured (a transport failure or an HTTP
-// error response that carried no usage data) gets `counterfactual_priced: false` with a named
-// reason, exactly the Google leg's own "a guessed price is worse than a missing one" discipline.
+// `substrate_price_table.json`'s own `default_counterfactual_model` (currently `claude-opus-5`,
+// $5.00/$25.00 per MTok input/output, verified_on 2026-08-03, verified_by FounderDenken,
+// source_url LianaBanyanPlatform/BISHOP_DROPZONE/SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_
+// SAVINGS_METER_BP143.md#part-one-the-price-table -- switched from claude-sonnet-5 to claude-opus-5
+// by D-BP223-BM04-h2cbpv9w-170 per Founder ruling conduit k/6e7949d5 2026-09-08T04:38:09Z, so the
+// counterfactual always prices the true naive no-cascade baseline, the flagship (config/
+// model_roster.json's brain.opus), never a rung that could equal the actual dispatched model and
+// silently zero the meter) -- a NAMED model at a NAMED, SOURCED, DATED rate, read live every call,
+// never a guess and never silently re-derived from a different number. A run whose token counts
+// were not measured (a transport failure or an HTTP error response that carried no usage data)
+// gets `counterfactual_priced: false` with a named reason, exactly the Google leg's own "a guessed
+// price is worse than a missing one" discipline.
 
 import os from 'node:os';
 import { readFileSync } from 'node:fs';
@@ -356,8 +361,11 @@ const LLM_PRICE_TABLE_PATH = 'C:\\Users\\Administrator\\Documents\\mnemosyne\\co
  *  read from the `local-member-hardware` row's own `note` field so its "excludes hardware and
  *  electricity" caveat travels with every record rather than being silently dropped.
  *  `counterfactual_usd` is priced against the table's own `default_counterfactual_model`
- *  (currently claude-sonnet-5) at that model's real, sourced, dated per-token rate -- never a
- *  guess, and refused (not zeroed) if no currently-effective, non-cancelled rate row exists. */
+ *  (currently claude-opus-5, $5.00/$25.00 per MTok, verified_on 2026-08-03, verified_by
+ *  FounderDenken -- the flagship, brain.opus in config/model_roster.json, per D-BP223-BM04-
+ *  h2cbpv9w-170's counterfactual-baseline switch) at that model's real, sourced, dated per-token
+ *  rate -- never a guess, and refused (not zeroed) if no currently-effective, non-cancelled rate
+ *  row exists. */
 function priceLlmLeg(tokens: LlmCallCostRecord['tokens']): LlmCallCostRecord['dollars'] {
   try {
     const table = JSON.parse(readFileSync(LLM_PRICE_TABLE_PATH, 'utf-8'));

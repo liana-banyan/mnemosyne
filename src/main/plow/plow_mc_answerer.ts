@@ -247,6 +247,22 @@ export type PlowMcCondition = 'A_cold' | 'B_warm_single_pass' | 'C_warm_andon';
 
 export interface CanonicalPlowMcConfig {
   domain: string;
+  /** D-BP223-M0-BROWSER_REFUSAL_WIRED: the benchmark corpus this run is against, e.g. 'MMLU-Pro'.
+   *  Threaded through into every BrowserAuthorityAdapterConfig built from `{ ...config, ... }`
+   *  below (Stage F2/F3, the Authority Ensemble's Google/Perplexity/Claude/ChatGPT/Gemini legs,
+   *  and the cake-pick llmPickerNames loop all spread `config`), which arms
+   *  browser_authority_types.ts's decideBrowserLookupRefusal at the chokepoint gate in
+   *  browser_authority_adapter.ts. Absent/undefined = byte-identical fail-open PERMIT behavior
+   *  for every pre-existing caller that never sets this (see decideBrowserLookupRefusal's own
+   *  reason string for that declared fail-open). See callCanonicalPlowMcAnswererForMeshTest's
+   *  PlowMcAnswererCallParams.benchmarkCorpusId for the two callers (one_click_mmlu_pro.ts's local
+   *  path, and the WAN relay-route responder in index.ts when the request's own question_id
+   *  identifies an MMLU-Pro question) that set this today.
+   *  D-BP223-M0-BROWSER_GATE_BYPASSES: the KNOWN LIMIT this comment used to name here (the three
+   *  queryXBrowserAuthorityObserved helpers and the cake-pick llmPickerNames loop building a
+   *  fresh config literal instead of spreading `config`) is CLOSED -- all four now take/spread
+   *  the caller's `config`. See browser_refusal_gate_wiring.test.ts for the proving tests. */
+  benchmarkCorpusId?: string;
   ollamaBaseUrl: string;
   model: string;
   choiceCount: number;
@@ -3120,9 +3136,13 @@ export async function runCakeMethodDisagreementResolution(params: {
     pickers.push({
       pickerKey: llmName,
       derivationPath: `browser:${llmName}`,
+      // D-BP223-M0-BROWSER_GATE_BYPASSES: spread `config` (never a fresh literal) so
+      // benchmarkCorpusId reaches the chokepoint gate here too -- same fix and same reason as
+      // queryClaudeBrowserAuthorityObserved above; this loop was the other named bypass (the
+      // user_perplexity picker just above it already spreads `config` and was already armed).
       askPick: async (p) => {
         const r = await runBrowserAuthorityLookup(
-          p, { researchArmMode: true, researchArmBrowserAuthority: true, preferredAuthority: llmName }, bridge,
+          p, { ...config, researchArmMode: true, researchArmBrowserAuthority: true, preferredAuthority: llmName }, bridge,
         );
         return r ? r.fact : null;
       },
@@ -3623,14 +3643,21 @@ interface BrowserLlmAuthorityObservation {
   raw: BrowserAuthorityRawExtraction | null;
 }
 
-async function queryClaudeBrowserAuthorityObserved(
+export async function queryClaudeBrowserAuthorityObserved(
   question: string,
   mcOptionTexts: string[],
   bridge: BrowserAuthorityBridge,
+  // D-BP223-M0-BROWSER_GATE_BYPASSES: the caller's own CanonicalPlowMcConfig, spread below
+  // (never a fresh literal) so benchmarkCorpusId reaches decideBrowserLookupRefusal's chokepoint
+  // gate the same way the user_google/user_perplexity legs already do -- see
+  // CanonicalPlowMcConfig.benchmarkCorpusId's own doc comment ("KNOWN LIMIT" paragraph this
+  // dispatch closes) for why this was previously missing.
+  config: CanonicalPlowMcConfig,
 ): Promise<BrowserLlmAuthorityObservation> {
   const observed = await runBrowserAuthorityLookupObserved(
     question,
     {
+      ...config,
       researchArmMode: true,
       researchArmBrowserAuthority: true,
       preferredAuthority: 'user_claude',
@@ -3645,14 +3672,18 @@ async function queryClaudeBrowserAuthorityObserved(
   };
 }
 
-async function queryChatGptBrowserAuthorityObserved(
+export async function queryChatGptBrowserAuthorityObserved(
   question: string,
   mcOptionTexts: string[],
   bridge: BrowserAuthorityBridge,
+  // D-BP223-M0-BROWSER_GATE_BYPASSES: see queryClaudeBrowserAuthorityObserved's own comment above
+  // -- same fix, same reason, spread not a fresh literal.
+  config: CanonicalPlowMcConfig,
 ): Promise<BrowserLlmAuthorityObservation> {
   const observed = await runBrowserAuthorityLookupObserved(
     question,
     {
+      ...config,
       researchArmMode: true,
       researchArmBrowserAuthority: true,
       preferredAuthority: 'user_chatgpt',
@@ -3667,14 +3698,18 @@ async function queryChatGptBrowserAuthorityObserved(
   };
 }
 
-async function queryGeminiBrowserAuthorityObserved(
+export async function queryGeminiBrowserAuthorityObserved(
   question: string,
   mcOptionTexts: string[],
   bridge: BrowserAuthorityBridge,
+  // D-BP223-M0-BROWSER_GATE_BYPASSES: see queryClaudeBrowserAuthorityObserved's own comment above
+  // -- same fix, same reason, spread not a fresh literal.
+  config: CanonicalPlowMcConfig,
 ): Promise<BrowserLlmAuthorityObservation> {
   const observed = await runBrowserAuthorityLookupObserved(
     question,
     {
+      ...config,
       researchArmMode: true,
       researchArmBrowserAuthority: true,
       preferredAuthority: 'user_gemini',
@@ -4216,10 +4251,10 @@ async function runAuthorityEnsemble(params: {
       // non-observed counterparts (still defined above, now otherwise-uncalled) returned as
       // `llmResult` -- `resolved`/`candidates` below are therefore unchanged byte-for-byte.
       const observed = llmName === 'user_claude'
-        ? await queryClaudeBrowserAuthorityObserved(researchQuery, mcOptionTexts, bridge)
+        ? await queryClaudeBrowserAuthorityObserved(researchQuery, mcOptionTexts, bridge, config)
         : llmName === 'user_chatgpt'
-          ? await queryChatGptBrowserAuthorityObserved(researchQuery, mcOptionTexts, bridge)
-          : await queryGeminiBrowserAuthorityObserved(researchQuery, mcOptionTexts, bridge);
+          ? await queryChatGptBrowserAuthorityObserved(researchQuery, mcOptionTexts, bridge, config)
+          : await queryGeminiBrowserAuthorityObserved(researchQuery, mcOptionTexts, bridge, config);
       const llmResult = observed.result;
       const resolved = llmResult ? resolveAuthorityLetterMatch(llmResult.fact, mcOptions) : null;
       if (resolved && llmResult) {
@@ -10146,6 +10181,9 @@ export interface PlowMcAnswererCallParams {
   effectivePrompt: string;
   researchQuery: string;
   domain: string;
+  /** D-BP223-M0-BROWSER_REFUSAL_WIRED: threaded straight through to CanonicalPlowMcConfig's field
+   *  of the same name -- see that field's own doc comment for the full mechanism. */
+  benchmarkCorpusId?: string;
   ollamaBaseUrl: string;
   model: string;
   choiceCount: number;
@@ -10287,7 +10325,7 @@ export async function callCanonicalPlowMcAnswererForMeshTest(
   params: PlowMcAnswererCallParams,
 ): Promise<PlowMcAnswererCallResult> {
   const {
-    effectivePrompt, researchQuery, domain, ollamaBaseUrl, model, choiceCount,
+    effectivePrompt, researchQuery, domain, benchmarkCorpusId, ollamaBaseUrl, model, choiceCount,
     substrateEnabled, plowAndonEnabled, reasoningMode, testModeCorrectAnswerLetter,
     researchArmMode, researchArmMeshSynergy, assignedAuthority, researchArmDecompose, logLabel,
   } = params;
@@ -10298,6 +10336,9 @@ export async function callCanonicalPlowMcAnswererForMeshTest(
     }): Promise<void> => { await writeVerifiedEblet(eblet); };
     const plowConfig = {
       domain,
+      // D-BP223-M0-BROWSER_REFUSAL_WIRED: absent/undefined when the caller never sets it (every
+      // pre-existing caller before this dispatch), matching this field's own declared fail-open.
+      ...(benchmarkCorpusId ? { benchmarkCorpusId } : {}),
       ollamaBaseUrl,
       model,
       choiceCount,

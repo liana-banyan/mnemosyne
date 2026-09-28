@@ -17,8 +17,29 @@ import { homedir } from 'node:os';
 // control-plane frames (no second crypto implementation) -- see peer_artifact_server.ts's
 // signArtifactHash() for the matching send-side signer this checks against.
 import { verifyFrame } from '../thorax/sign_verify';
+// D-BP223-BM0-X030-098: signs the port 47213 request header (same primitive as the 7474 /api/info header).
+import { signAnnouncePayload } from '../federation/announce_frame';
 
 const ARTIFACT_CACHE_DIR = join(homedir(), '.lb_substrate', 'artifact_cache');
+
+/**
+ * D-BP223-BM0-X030-098: peer_artifact_server.ts (port 47213) now refuses non-local requests without the same signed frame as
+ * port 7474's GET routes. This builds that header for one request path: a Thorax-signed frame whose payload carries
+ * route = the exact path, a fresh issued_ms and this node's sender_peer_id when registered. Fails soft to no header (the
+ * peer then answers 403 and the caller treats it as "no peer has it", the same as before for an unreachable peer).
+ * An older (0.9.30) server ignores the extra header, so this is safe against mixed versions in that direction.
+ */
+export function signedArtifactGetHeaders(path: string): Record<string, string> {
+  try {
+    let senderPeerId: string | undefined;
+    // sender_peer_id is optional (lets the server prefer an enrolled key); loaded lazily to keep peer_server out of this module's import graph.
+    try { senderPeerId = (require('../federation/peer_server') as typeof import('../federation/peer_server')).getRegisteredPeerId() ?? undefined; } catch { senderPeerId = undefined; }
+    const signed = signAnnouncePayload('artifact-get-' + Date.now(), { route: path, issued_ms: Date.now(), ...(senderPeerId ? { sender_peer_id: senderPeerId } : {}) });
+    return signed ? { 'x-mnem-signed-frame': signed.signedHex } : {};
+  } catch {
+    return {};
+  }
+}
 
 export interface PeerArtifactResult {
   source: 'peer' | 'server';
@@ -41,7 +62,7 @@ export async function findPeerWithArtifact(
       const [host, portStr] = addr.split(':');
       const port = parseInt(portStr, 10);
       const req = httpRequest(
-        { host, port, path: `/hash/${encodeURIComponent(version)}`, method: 'GET', timeout: timeoutMs },
+        { host, port, path: `/hash/${encodeURIComponent(version)}`, method: 'GET', timeout: timeoutMs, headers: signedArtifactGetHeaders(`/hash/${encodeURIComponent(version)}`) },
         (res) => {
           let data = '';
           res.on('data', (c: Buffer) => { data += c.toString(); });
@@ -79,7 +100,7 @@ interface SignedHashResponse {
 function fetchSignedHash(host: string, port: number, version: string, timeoutMs = 5000): Promise<SignedHashResponse | null> {
   return new Promise((resolve) => {
     const req = httpRequest(
-      { host, port, path: `/hash/${encodeURIComponent(version)}`, method: 'GET', timeout: timeoutMs },
+      { host, port, path: `/hash/${encodeURIComponent(version)}`, method: 'GET', timeout: timeoutMs, headers: signedArtifactGetHeaders(`/hash/${encodeURIComponent(version)}`) },
       (res) => {
         let data = '';
         res.on('data', (c: Buffer) => { data += c.toString(); });
@@ -151,7 +172,7 @@ export async function downloadFromPeer(
   // Bytes go to a TEMP path first -- never write straight to the path a caller might read.
   await new Promise<void>((resolve, reject) => {
     const req = httpRequest(
-      { host, port, path: `/artifact/${encodeURIComponent(version)}`, method: 'GET' },
+      { host, port, path: `/artifact/${encodeURIComponent(version)}`, method: 'GET', headers: signedArtifactGetHeaders(`/artifact/${encodeURIComponent(version)}`) },
       (res) => {
         if (res.statusCode !== 200) {
           reject(new Error(`Peer returned ${res.statusCode}`));

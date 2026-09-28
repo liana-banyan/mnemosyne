@@ -75,5 +75,16 @@ export const DEFAULT_BROWSER_AUTHORITY_RUNTIME_STATE: BrowserAuthorityRuntimeSta
 export const BROWSER_AUTHORITY_SETTLE_DELAY_MS = 900;
 
 /** Hard ceiling on how long runBrowserAuthorityQuery() waits for an extraction reply before
- *  resolving with a null result (never hangs forever, never fakes a late success). */
-export const BROWSER_AUTHORITY_TIMEOUT_MS = 15000;
+ *  resolving with a null result (never hangs forever, never fakes a late success).
+ *
+ *  D-BP223-BM0-X014-010-TRUNCFIX, RAISED 15000 -> 30000. webview_preload.ts's
+ *  'browser-authority-run-query' handler -- the reply side of THIS request -- no longer scrapes
+ *  once and answers; it polls the answer element to stability (pollUrlQueryAnswerUntilStable),
+ *  because the single fixed scrape was measured live returning 306 characters of a reply that
+ *  settled at 935. This ceiling had to move with it or this UI path would have started timing
+ *  out on exactly the answers the fix exists to deliver whole. Arithmetic, same pattern as
+ *  index.ts's BROWSER_AUTHORITY_MAIN_TIMEOUT_MS:
+ *    6.0 s navigation + did-finish-load (measured live this ticket) + 0.9 s
+ *    BROWSER_AUTHORITY_SETTLE_DELAY_MS above + 20.0 s URL_QUERY_SETTLE_MAX_WAIT_MS
+ *    = 26.9 s worst case, ~3 s of margin under this cap. */
+export const BROWSER_AUTHORITY_TIMEOUT_MS = 30000;

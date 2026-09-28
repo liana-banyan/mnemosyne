@@ -168,6 +168,7 @@ async function submitReplyViaEdgeFunction(
   peerId: string,
   answer: string,
   processingMs: number,
+  desktopInUse = false,
 ): Promise<boolean> {
   try {
     const res = await fetch(`${supabaseUrl}/functions/v1/submit-relay-route-reply`, {
@@ -177,7 +178,9 @@ async function submitReplyViaEdgeFunction(
         Authorization: `Bearer ${anonKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ route_id: routeId, peer_id: peerId, answer_json: { answer }, processing_ms: processingMs }),
+      // D-BP223-BM0-X029-018: desktop_in_use labels a result (and its processing_ms timing) produced
+      // while the person was using this computer. Additive key; readers of { answer } are unaffected.
+      body: JSON.stringify({ route_id: routeId, peer_id: peerId, answer_json: { answer, desktop_in_use: desktopInUse }, processing_ms: processingMs }),
       signal: AbortSignal.timeout(SUPABASE_FETCH_TIMEOUT_MS),
     });
     if (!res.ok) {
@@ -189,6 +192,39 @@ async function submitReplyViaEdgeFunction(
     log(`submit reply network error route=${routeId.slice(0, 8)}: ${(e as Error).message}`);
     return false;
   }
+}
+
+// ─── "You come first" (D-BP223-BM0-X029-018, Founder k/0ee57a97) ─────────────────
+// The worker is a forked Node child: it has no Electron powerMonitor, so it ASKS the supervisor
+// (relay_answer/index.ts, in the main process) which answers from user_precedence/. A supervisor
+// that does not answer within 5 s (an older main build) is treated as "no yield, label unknown ->
+// desktop in use", so the worker never stalls forever on a missing reply.
+
+interface PrecedenceReply { yield: boolean; desktopInUse: boolean; explanation: string }
+let precedenceSeq = 0;
+const precedenceWaiters = new Map<number, (r: PrecedenceReply) => void>();
+let lastYieldLogged = false;
+
+process.on('message', (msg: { type?: string; id?: number; decision?: PrecedenceReply }) => {
+  if (msg?.type !== 'precedence_reply' || typeof msg.id !== 'number' || !msg.decision) return;
+  const w = precedenceWaiters.get(msg.id);
+  if (w) { precedenceWaiters.delete(msg.id); w(msg.decision); }
+});
+
+function askPrecedence(model: string): Promise<PrecedenceReply> {
+  return new Promise((resolve) => {
+    if (typeof process.send !== 'function') {
+      resolve({ yield: false, desktopInUse: true, explanation: 'no supervisor channel' });
+      return;
+    }
+    const id = ++precedenceSeq;
+    const timer = setTimeout(() => {
+      precedenceWaiters.delete(id);
+      resolve({ yield: false, desktopInUse: true, explanation: 'supervisor did not answer the precedence query in 5 s' });
+    }, 5000);
+    precedenceWaiters.set(id, (r) => { clearTimeout(timer); resolve(r); });
+    process.send({ type: 'precedence_query', id, model });
+  });
 }
 
 // ─── Main tick ────────────────────────────────────────────────────────────────
@@ -238,18 +274,37 @@ async function tick(config: Required<WorkerConfig>, pollCount: number): Promise<
     return;
   }
 
+  if (!config.model) {
+    if (pollCount % 20 === 1) {
+      log(`poll #${pollCount}: ${routes.length} pending route(s) NOT answered: no configured brain (legacy floor ${FLOOR_MODEL} is no longer used; set the local ASK brain or MNEM_RELAY_ANSWER_MODEL)`);
+    }
+    return;
+  }
   log(`poll #${pollCount}: ${routes.length} pending route(s) for peer ${config.peerId.slice(0, 8)}`);
   for (const route of routes) {
     const prompt =
       route.payload_json?.prompt ?? route.payload_json?.question ?? JSON.stringify(route.payload_json);
     try {
+      // D-BP223-BM0-X029-018: ask before EVERY route (a batch can outlast the person's idle spell).
+      // Yield = leave this route and the rest PENDING (queued, untouched) and return; next tick re-asks.
+      const before = await askPrecedence(config.model);
+      if (before.yield) {
+        if (!lastYieldLogged) log(`YIELDING, ${routes.length} route(s) left pending: ${before.explanation}`);
+        lastYieldLogged = true;
+        process.send?.({ type: 'yielding', explanation: before.explanation });
+        return;
+      }
+      if (lastYieldLogged) log('resuming route answering (computer idle)');
+      lastYieldLogged = false;
       const { answer, elapsed } = await runOllama(config.ollamaUrl, config.model, prompt);
+      const after = await askPrecedence(config.model);
+      const desktopInUse = before.desktopInUse || after.desktopInUse;
       const submitted = await submitReplyViaEdgeFunction(
-        config.supabaseUrl, config.anonKey, route.id, config.peerId, answer, elapsed,
+        config.supabaseUrl, config.anonKey, route.id, config.peerId, answer, elapsed, desktopInUse,
       );
       if (submitted) {
         const processedAt = new Date().toISOString();
-        log(`route ${route.id.slice(0, 8)} answered in ${elapsed}ms`);
+        log(`route ${route.id.slice(0, 8)} answered in ${elapsed}ms${desktopInUse ? ' (desktop in use)' : ''}`);
         process.send?.({ type: 'route_processed', routeId: route.id, processedAt });
       }
     } catch (e: unknown) {
@@ -273,12 +328,15 @@ process.on('message', (msg: { type: string; config?: WorkerConfig }) => {
     peerId: cfg.peerId,
     supabaseUrl: (cfg.supabaseUrl ?? '').replace(/\/$/, ''),
     anonKey: cfg.anonKey,
-    model: cfg.model ?? FLOOR_MODEL,
+    // D-BP223-BM0-X029-012 (Founder k/ab297dcf via XO): NO hardcoded model fallback. FLOOR_MODEL is kept for the record
+    // (Addendum never Deletion) but is no longer used: with no configured brain passed in, the worker keeps polling and
+    // heartbeating but does NOT answer routes, so it can never load a model the node was not configured for.
+    model: (cfg.model ?? '').trim(),
     pollIntervalMs: cfg.pollIntervalMs ?? 3000,
     ollamaUrl: (cfg.ollamaUrl ?? 'http://127.0.0.1:11434').replace(/\/$/, ''),
   };
 
-  log(`starting — peer=${resolved.peerId.slice(0, 8)} model=${resolved.model} interval=${resolved.pollIntervalMs}ms`);
+  log(`starting — peer=${resolved.peerId.slice(0, 8)} model=${resolved.model || '(none configured: routes will not be answered)'} interval=${resolved.pollIntervalMs}ms`);
   process.send?.({ type: 'started' });
 
   let inflight = false;

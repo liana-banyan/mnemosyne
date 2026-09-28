@@ -243,6 +243,65 @@ function MeshTrustSection(): React.ReactElement {
   );
 }
 
+// ─── D-BP223-BM0-X030-073 P1: Share presence with my other machines ──────────
+// The one switch for the relay beacon (60 s presence publish + heartbeat worker to relay.lianabanyan.com). Default ON only
+// when this machine is signed in and has an enrolled machine of the same owner; OFF otherwise. The email hash it sends is
+// salted per install and the salt never leaves this machine.
+
+function PresenceShareSection(): React.ReactElement {
+  const [state, setState] = useState<{ enabled: boolean; source: string; sameOwnerMesh: boolean; sameOwnerPeers: number } | null>(null);
+  const [available, setAvailable] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const amplify = (window as any).amplify;
+    if (!amplify?.getPresenceShare) { setAvailable(false); return; }
+    amplify.getPresenceShare().then((s: any) => setState(s)).catch(() => setAvailable(false));
+  }, []);
+
+  const toggle = useCallback(async () => {
+    if (!state) return;
+    setBusy(true);
+    try {
+      const s = await (window as any).amplify?.setPresenceShare?.(!state.enabled);
+      if (s) setState(s);
+    } catch { setAvailable(false); }
+    finally { setBusy(false); }
+  }, [state]);
+
+  return (
+    <SectionCard title="📡 Share presence with my other machines">
+      <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10, lineHeight: 1.5 }}>
+        When on, this app tells our relay every minute that this machine is online, so your other MnemosyneC machines can
+        find it: machine label, local network addresses, a salted hash of your sign-in email (the salt stays on this
+        machine), and app version. When off, nothing is sent to the relay. Turning this off does not close the local mesh
+        port; every request to that port must still be signed.
+      </div>
+      {!available ? (
+        <DeadControlNote text="This app build cannot reach the presence setting (no response from the main process)." />
+      ) : !state ? (
+        <span style={{ fontSize: 11, color: '#64748b' }}>Loading…</span>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <div style={{ fontSize: 10, color: '#94a3b8', lineHeight: 1.5 }}>
+            {state.enabled ? <StatusPill text="ON" tone="warn" /> : <StatusPill text="OFF" tone="safe" />}{' '}
+            {state.source === 'user' ? 'Your choice.' : state.sameOwnerMesh
+              ? `Default on: ${state.sameOwnerPeers} enrolled machine(s) of yours.`
+              : 'Default off: no enrolled machine of yours was found.'}
+          </div>
+          <button
+            onClick={() => { void toggle(); }}
+            disabled={busy}
+            style={{ padding: '3px 10px', borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: 'pointer', border: '1px solid #334155', background: 'none', color: '#cbd5e1', opacity: busy ? 0.6 : 1 }}
+          >
+            {state.enabled ? 'Turn off' : 'Turn on'}
+          </button>
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
 // ─── 3. Paid escalation ───────────────────────────────────────────────────────
 
 interface AiDispatchSettingsShape {
@@ -610,6 +669,7 @@ export function AuthorizationsPanel({ onSubViewChange }: AuthorizationsPanelProp
         <RemoteAdministrationConsentPanel />
       </div>
       <MeshTrustSection />
+      <PresenceShareSection />
       <PaidEscalationSection />
       <NexusAuthoritiesSection onOpenSettings={onSubViewChange ? () => onSubViewChange('settings') : undefined} />
       <ActiveTasksSection />

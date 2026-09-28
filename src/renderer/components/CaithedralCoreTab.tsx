@@ -110,7 +110,7 @@ export function CaithedralCoreTab() {
             Caithedral™ Core
           </div>
           <div style={{ fontSize: 10, color: P.muted, marginTop: 1 }}>
-            Keystone I · SSPL-1.0 · Designed to Be Copied
+            Keystone I · MCSL-2.0 · Designed to Be Copied
           </div>
         </div>
         {!available && (
@@ -190,7 +190,7 @@ export function CaithedralCoreTab() {
         flexShrink: 0,
         lineHeight: 1.6,
       }}>
-        CAI™ Core Keystone I · SSPL-1.0 + Patent Pledge #2260 · © 2026 Liana Banyan Corporation · 50-year charter · Designed to Be Copied · mnemosynec.ai
+        CAI™ Core Keystone I · MCSL-2.0 + Patent Pledge #2260 · © 2026 Liana Banyan Corporation · 50-year charter · Designed to Be Copied · mnemosynec.ai
       </div>
     </div>
   );
@@ -273,7 +273,7 @@ function OverviewPanel({ cai }: { cai: CaithedralApi | null }) {
           accent={P.success}
         />
         <StatCard label="Architecture" value="Caithedral™ active" accent={P.accent} />
-        <StatCard label="License" value="SSPL-1.0" />
+        <StatCard label="License" value="MCSL-2.0" />
       </div>
 
       {error && (
@@ -302,7 +302,7 @@ function OverviewPanel({ cai }: { cai: CaithedralApi | null }) {
         {' · '}Cooperative AI Memory Architecture
         {' · '}Reference Implementation
         <br />
-        SSPL-1.0 + Cooperative Patent Pledge #2260 · Designed to Be Copied
+        MCSL-2.0 + Cooperative Patent Pledge #2260 · Designed to Be Copied
         <br />
         <button
           onClick={() => (window as unknown as { amplify?: { openExternal?: (u: string) => void } }).amplify?.openExternal?.('https://mnemosynec.ai')}

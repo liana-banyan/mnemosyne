@@ -359,7 +359,7 @@ export function CatacombsTab({ onManifestsLoaded }: CatacombsTabProps = {}) {
         {accessResult?.show_offer && (
           <div style={S.offerBanner}>
             <strong>Commercial Access Notice:</strong> You are viewing the Alexandrian Catacombs
-            under SSPL base license. A 30-day 50% commercial license offer is available.
+            under the Mnemosyne Cooperative Source License 2.0. Commercial use requires the Commercial License; a 30-day 50% introductory offer is available.
             Join as a cooperative member for $5/year for full access.
           </div>
         )}

@@ -63,7 +63,7 @@ You can opt out any time. We honor revocation by cryptographically retracting yo
 
 ### Is this safe?
 
-The Library-of-Congress source material is **public domain** — we're not copying anything that isn't already free to copy. The Eblets we produce are licensed under **AGPL v3** (anyone can use them · anyone can audit them) and the cooperative-class **SSPL** (so big platforms can't repackage them extractively without sharing back).
+The Library-of-Congress source material is **public domain** — we're not copying anything that isn't already free to copy. The Eblets we produce are licensed under the **Mnemosyne Cooperative Source License 2.0** (anyone in the cooperative class can use them and audit them; commercial use needs a signed license, so big platforms can't repackage them extractively without paying back).
 
 Our patent strategy is **defensive only** (Cooperative Defensive Patent Pledge #2260) — we hold patents to prevent others from blocking the cooperative · not to sue creators. Per Saladin's Pattern™: we use IP for protection of the commons, not conquest of the commons.
 

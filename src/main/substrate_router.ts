@@ -47,6 +47,14 @@ export interface QueryResult {
   model_used?: string;
   input_tokens_real?: number;
   output_tokens_real?: number;
+  /** D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: the model name Ollama's own
+   *  /api/generate response echoed back in its top-level `model` field, when it reported one.
+   *  Distinct from model_used (the model REQUESTED) for the same "price what actually ran"
+   *  reason as ai_dispatch_ipc.ts's dispatchViaBrain() -- see that file's SEGResultEnvelope.
+   *  Consumed by substrate_api.ts's _emitSavingsReceipt via
+   *  SavingsReceiptInput.model_id_from_provider. Undefined when no model call was made or the
+   *  provider did not report the field. */
+  model_id_from_provider?: string;
 }
 
 export interface QueryOptions {
@@ -357,6 +365,9 @@ export class SubstrateRouter {
         // guessed (D-BP155-024 seg-savings-meter).
         ...(ollamaResult.inputTokens != null ? { input_tokens_real: ollamaResult.inputTokens } : {}),
         ...(ollamaResult.outputTokens != null ? { output_tokens_real: ollamaResult.outputTokens } : {}),
+        // D-BP223-M0-h2cbpo68-MODEL_ROSTER: Ollama's own response `model` field, when reported --
+        // "price what actually ran" applied to the local path too, not just the cloud one.
+        ...(ollamaResult.providerModel != null ? { model_id_from_provider: ollamaResult.providerModel } : {}),
       };
     }
 
@@ -390,7 +401,7 @@ export class SubstrateRouter {
   private async _tryOllama(
     query: string,
     model = FLOOR_MODEL,
-  ): Promise<{ text: string; inputTokens: number | null; outputTokens: number | null } | null> {
+  ): Promise<{ text: string; inputTokens: number | null; outputTokens: number | null; providerModel: string | null } | null> {
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 8000);
@@ -413,6 +424,7 @@ export class SubstrateRouter {
         response?: string;
         prompt_eval_count?: number;
         eval_count?: number;
+        model?: string;
       };
       const text = data.response?.trim() ?? null;
       if (!text) return null;
@@ -420,6 +432,10 @@ export class SubstrateRouter {
         text,
         inputTokens: typeof data.prompt_eval_count === 'number' ? data.prompt_eval_count : null,
         outputTokens: typeof data.eval_count === 'number' ? data.eval_count : null,
+        // D-BP223-M0-h2cbpo68-MODEL_ROSTER: Ollama's own response echoes the model it actually
+        // ran back in this field -- carried through verbatim, never defaulted to the requested
+        // `model` param above.
+        providerModel: typeof data.model === 'string' ? data.model : null,
       };
     } catch {
       return null;

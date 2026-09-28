@@ -24,12 +24,37 @@ export interface PriceTableRate {
   note?: string;
 }
 
+// D-BP223-M0-h2cbpo68-032/SEG-M0/BP223-SAVINGS_INSTRUMENT: a model_id can be MISSING from
+// `rates` for two different reasons that read identically to lookupRate()'s 'no_rate_for_model'
+// but are NOT the same fact -- "nobody has checked yet" versus "checked, twice, independently,
+// and the vendor genuinely does not price this model_id." Confusing the two is exactly the kind
+// of confidently-wrong-or-silently-blank gap this table exists to prevent (see the SAVINGS_METER
+// _AUDITOR_DISPUTE_LIST_BP155.md item 8). `unpriced_models` is optional, additive, and never
+// consulted by lookupRate() itself (which must keep refusing to guess regardless of why a rate
+// is absent) -- it exists only so a receipt's basis string can say WHICH kind of absence this is.
+export interface UnpricedModelEntry {
+  model_id: string;
+  dispatched_from?: string;
+  unpriced_reason: string;
+  checked_on: string;
+  checked_by?: string;
+  sources_checked?: Array<{
+    source_url: string;
+    fetched_utc: string;
+    finding: string;
+    snapshot_sha256?: string;
+    snapshot_note?: string;
+  }>;
+  verified_by?: string;
+}
+
 interface PriceTableFile {
   table_version: string;
   stale_after_days: number;
   default_counterfactual_model: string;
   counterfactual_tokens_per_char: { value: number; basis: string };
   rates: PriceTableRate[];
+  unpriced_models?: UnpricedModelEntry[];
 }
 
 export type RateLookupResult =
@@ -130,6 +155,24 @@ export function getCounterfactualDefaults(
     tokensPerChar: table.counterfactual_tokens_per_char.value,
     basis: table.counterfactual_tokens_per_char.basis,
   };
+}
+
+/**
+ * D-BP223-M0-h2cbpo68-032/SEG-M0/BP223-SAVINGS_INSTRUMENT: look up whether a model_id's absence
+ * from `rates` has already been investigated and documented (see UnpricedModelEntry above), as
+ * opposed to simply never having been checked. Returns null for either "table unreadable" or
+ * "no documented entry" -- callers should treat both the same way (fall back to the plain
+ * 'no_rate_for_model' reason from lookupRate()), since the absence of a documented reason is
+ * NOT itself evidence the model is unpriceable-by-design; it may just mean nobody has looked yet.
+ * Never used by lookupRate() itself -- this must never become a second way to skip a real rate.
+ */
+export function getUnpricedReason(
+  modelId: string,
+  tablePath: string = DEFAULT_TABLE_PATH,
+): UnpricedModelEntry | null {
+  const table = loadTable(tablePath);
+  if (!table || !table.unpriced_models) return null;
+  return table.unpriced_models.find((u) => u.model_id === modelId) ?? null;
 }
 
 export { DEFAULT_TABLE_PATH };

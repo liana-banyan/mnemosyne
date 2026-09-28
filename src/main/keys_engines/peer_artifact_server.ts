@@ -7,6 +7,19 @@
  *   GET /hash/:version       -> JSON { peerId, hash } (socceri-hash of local installer bytes)
  *   GET /artifact/:version   -> binary stream of local installer file
  *   GET /health              -> JSON { ok: true, peerId }
+ *
+ * D-BP223-BM0-X030-098 (same class as X030-073 P2, XO X030 pick on Founder k/0a8d1c96): this server was plain HTTP with no
+ * auth. It now requires THE SAME signed frame as port 7474's GET routes for every request that does not come from this
+ * machine: header x-mnem-signed-frame, a Thorax-signed frame whose payload names the exact request path as `route` and a
+ * fresh `issued_ms` (5 minute window), verified by peer_server.ts requireSignedGet (enrolled key, then beacon-learned key,
+ * then the frame's self-declared key). Unsigned, wrong-route, stale or tampered = 403, before any file is read.
+ *   - Loopback requests (127.0.0.1, ::1, ::ffff:127.0.0.1) stay unsigned: same machine, and the signed-hash download check in
+ *     peer_artifact_client.ts still guards the bytes.
+ *   - The one unauthenticated non-local answer is GET /health -> exactly { ok: true }, no peer id (the 7474 health ping rule).
+ *   - BIND STAYS ON ALL INTERFACES, on purpose: there is a documented LAN need. peer_server.ts publishes this server as
+ *     artifact_server_address (identity/peerIdentityCollector.ts, http://<primary LAN IP>:<port>), and
+ *     mesh_update_propagation.ts + catacombs/eblet_package_fetcher.ts pull installer / package bytes from OTHER machines at
+ *     that address. Binding 127.0.0.1 would silently end mesh update propagation.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -21,6 +34,8 @@ import { homedir } from 'node:os';
 // downloadFromPeer() for the receive-side verification this signature exists to satisfy.
 import { getOrCreateKeypair } from '../thorax/ed25519_keypair';
 import { signFrame } from '../thorax/sign_verify';
+// D-BP223-BM0-X030-098: the SAME signed-frame check port 7474 applies to its GET routes.
+import { requireSignedGet } from '../federation/peer_server';
 
 const PEER_ARTIFACT_PORT = parseInt(process.env.PEER_ARTIFACT_PORT ?? '47213', 10);
 const ARTIFACT_CACHE_DIR = join(homedir(), '.lb_substrate', 'artifact_cache');
@@ -65,44 +80,89 @@ function signArtifactHash(version: string, hash: string): { publicKeyHex: string
 // plenty of headroom without scanning indefinitely.
 const MAX_PORT_RETRIES = 5;
 
-export function startPeerArtifactServer(): void {
-  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    const url = req.url ?? '/';
+/** X030-098: true only for this machine's own loopback addresses. */
+export function isLoopbackAddress(addr: string | undefined | null): boolean {
+  if (!addr) return false;
+  const a = addr.trim().toLowerCase();
+  return a === '::1' || a === '127.0.0.1' || a.startsWith('127.') || a.startsWith('::ffff:127.');
+}
 
-    if (url === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, peerId: FRAME_ID }));
+type SignedGetCheck = { ok: true } | { ok: false; status: number; error: string };
+type SignedGetVerifier = (headers: IncomingMessage['headers'], route: string) => SignedGetCheck;
+
+/** The 7474 verifier (peer_server.ts requireSignedGet). Any throw inside it REFUSES non-local access (fail closed). */
+function defaultSignedGetVerifier(headers: IncomingMessage['headers'], route: string): SignedGetCheck {
+  try {
+    const v = requireSignedGet(headers, route);
+    return v.ok ? { ok: true } : { ok: false, status: v.status, error: v.error };
+  } catch (err) {
+    return { ok: false, status: 403, error: 'refused: signed-frame verifier failed (' + (err instanceof Error ? err.message : String(err)) + ')' };
+  }
+}
+
+export interface PeerArtifactHandlerOptions {
+  /** Tests only: override the loopback test (to exercise the non-local path over a 127.0.0.1 socket). */
+  isLocal?: (remoteAddress: string | undefined) => boolean;
+  /** Tests only: override the signed-frame verifier. Default is peer_server.ts requireSignedGet. */
+  verifySignedGet?: SignedGetVerifier;
+}
+
+function sendJson(res: ServerResponse, status: number, data: unknown): void {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(data));
+}
+
+/** X030-098: the request handler, exported so the auth rule is testable over real HTTP. */
+export function createPeerArtifactRequestHandler(opts: PeerArtifactHandlerOptions = {}): (req: IncomingMessage, res: ServerResponse) => void {
+  const isLocal = opts.isLocal ?? isLoopbackAddress;
+  const verifySignedGet = opts.verifySignedGet ?? defaultSignedGetVerifier;
+
+  return (req: IncomingMessage, res: ServerResponse) => {
+    const url = req.url ?? '/';
+    const pathname = url.split('?')[0];
+    const local = isLocal(req.socket?.remoteAddress);
+
+    let signedOk = false;
+    if (!local) {
+      const check = verifySignedGet(req.headers, pathname);
+      signedOk = check.ok;
+      if (!check.ok && pathname !== '/health') {
+        sendJson(res, check.status || 403, { error: check.error });
+        return;
+      }
+    }
+
+    if (pathname === '/health') {
+      // Non-local and unsigned: the minimal ping only, no machine details (the 7474 health rule).
+      sendJson(res, 200, local || signedOk ? { ok: true, peerId: FRAME_ID } : { ok: true });
       return;
     }
 
-    const hashMatch = url.match(/^\/hash\/(.+)$/);
+    const hashMatch = pathname.match(/^\/hash\/(.+)$/);
     if (hashMatch) {
       const version = decodeURIComponent(hashMatch[1]);
       const hash = computeLocalHash(version);
       if (!hash) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'artifact not in local cache' }));
+        sendJson(res, 404, { error: 'artifact not in local cache' });
         return;
       }
       // D-BP151-045: additive fields only -- publicKeyHex/signedHex are new, peerId/hash are
       // unchanged, so this stays backward compatible with anything that only reads peerId/hash.
       const sig = signArtifactHash(version, hash);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+      sendJson(res, 200, {
         peerId: FRAME_ID,
         hash,
         ...(sig ? { publicKeyHex: sig.publicKeyHex, signedHex: sig.signedHex } : {}),
-      }));
+      });
       return;
     }
 
-    const artifactMatch = url.match(/^\/artifact\/(.+)$/);
+    const artifactMatch = pathname.match(/^\/artifact\/(.+)$/);
     if (artifactMatch) {
       const version = decodeURIComponent(artifactMatch[1]);
       const artifactPath = getArtifactPath(version);
       if (!existsSync(artifactPath)) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'artifact not in local cache' }));
+        sendJson(res, 404, { error: 'artifact not in local cache' });
         return;
       }
       res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
@@ -112,7 +172,11 @@ export function startPeerArtifactServer(): void {
 
     res.writeHead(404);
     res.end('Not found');
-  });
+  };
+}
+
+export function startPeerArtifactServer(): void {
+  const server = createServer(createPeerArtifactRequestHandler());
 
   // BP138 Yoke 0.9.13 F4 item 3: server.listen()'s EADDRINUSE fires asynchronously as an
   // 'error' EVENT on the server object -- it is NOT thrown synchronously, so the try/catch
@@ -142,8 +206,9 @@ export function startPeerArtifactServer(): void {
       }
       console.warn('[PeerArtifactServer] Failed to start (non-fatal):', err);
     });
+    // X030-098: all interfaces on purpose (documented LAN need, see header); non-local requests need the signed frame.
     server.listen(port, () => {
-      console.log(`[PeerArtifactServer] Listening on port ${port} (Frame: ${FRAME_ID})`);
+      console.log(`[PeerArtifactServer] Listening on port ${port} (Frame: ${FRAME_ID}); non-local requests require a signed frame`);
     });
   };
 

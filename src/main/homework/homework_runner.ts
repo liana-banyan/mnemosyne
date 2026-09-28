@@ -580,13 +580,25 @@ async function runHomeworkSweep(): Promise<void> {
     return;
   }
 
+  // Gate 5 — D-BP223-BM0-X029-018 "You come first" (Founder k/0ee57a97): Gate 2 above already waits
+  // for idle input; this adds the full-screen foreground (video, game, presentation) and VRAM
+  // headroom checks shared by every background worker. With "You come first" OFF this never yields.
+  const { checkUserPrecedence } = await import('../user_precedence');
+  const precedence = await checkUserPrecedence({ model: FLOOR_MODEL, ollamaUrl: OLLAMA_API_BASE });
+  if (precedence.yield) {
+    console.log(`[homework] ${precedence.explanation}`);
+    return;
+  }
+
   try {
     const result = await runHomeworkJob(job);
     if (result.ok) {
       moveHomeworkFileToFired(job, homeworkFiredDir());
+      const after = await checkUserPrecedence({});
+      const inUse = precedence.desktopInUse || after.desktopInUse;
       console.log(
         `[homework] idle ${idleMinutes}min, ran ${job.frontmatter.job_type} on ${job.frontmatter.source_path}, ` +
-        `minted ${result.ebletPath ?? result.provenance}, $0`,
+        `minted ${result.ebletPath ?? result.provenance}, $0${inUse ? ' (desktop in use)' : ''}`,
       );
     } else {
       markHomeworkFailed(job, result.reason ?? 'unknown failure');

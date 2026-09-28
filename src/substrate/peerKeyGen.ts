@@ -102,7 +102,7 @@ async function fetchPeerPresenceRow(
   config: SupabaseConfig
 ): Promise<PeerPresenceRow | null> {
   const res = await fetch(
-    `${config.supabaseUrl}/rest/v1/peer_presence?peer_id=eq.${encodeURIComponent(peerId)}&select=peer_id,public_key_hex,private_key_hex_encrypted,capabilities&limit=1`,
+    `${config.supabaseUrl}/rest/v1/peer_presence?peer_id=eq.${encodeURIComponent(peerId)}&select=peer_id,public_key_hex,capabilities&limit=1`,
     {
       headers: {
         apikey: config.anonKey,
@@ -118,7 +118,6 @@ async function fetchPeerPresenceRow(
 async function upsertPeerKeyColumns(
   peerId: string,
   publicKeyHex: string,
-  privateKeyEncrypted: string,
   config: SupabaseConfig
 ): Promise<boolean> {
   const res = await fetch(
@@ -130,7 +129,9 @@ async function upsertPeerKeyColumns(
         Authorization: `Bearer ${config.anonKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ public_key_hex: publicKeyHex, private_key_hex_encrypted: privateKeyEncrypted }),
+      // D-BP223-BM0-X037-009: the PUBLIC half only. See ensurePeerKeypair below for why the
+      // private key is no longer sent anywhere.
+      body: JSON.stringify({ public_key_hex: publicKeyHex }),
     }
   );
   return res.ok;
@@ -159,12 +160,19 @@ export async function ensurePeerKeypair(
   // Generate new keypair
   const { publicKeyHex, privateKeyPem } = generateEd25519KeyPair();
 
-  // Encrypt private key before any storage
-  const encryptionSalt = randomBytes(16);
-  const privateKeyEncrypted = encryptPrivateKey(privateKeyPem, encryptionSalt);
-
-  // Store in peer_presence
-  await upsertPeerKeyColumns(peerId, publicKeyHex, privateKeyEncrypted, config);
+  // D-BP223-BM0-X037-009. THE PRIVATE KEY IS NEVER UPLOADED. THIS IS THE FIX, NOT A TIGHTER CIPHER.
+  // This function used to encrypt the private key and PATCH it into peer_presence. The
+  // "encryption" was not encryption: deriveEncryptionKey() stretched the hardcoded literal
+  // 'device-local-key-derivation', identical in every copy of this application and now published
+  // in a public repository, and encryptPrivateKey() stored the salt inside the same string as the
+  // ciphertext. decryptPrivateKey() therefore takes ONE argument and needs no device secret at
+  // all, so anyone able to read the column could recover the key with a function that ships in
+  // the app. Measured 2026-09-24: the table held 0 stored keys, so nothing was ever exposed.
+  // A peer's signing key has no business leaving the machine. The substrate only ever needs the
+  // public half, which is what is published below. Column-level SELECT on
+  // peer_presence.private_key_hex_encrypted has also been revoked from anon and authenticated so
+  // the table stays safe even if some future path tries this again.
+  await upsertPeerKeyColumns(peerId, publicKeyHex, config);
 
   // Stamp the keypair_generated event in ip_ledger
   const stampEntry_ = stampEntry({

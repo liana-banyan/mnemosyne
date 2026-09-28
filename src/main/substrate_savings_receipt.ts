@@ -45,7 +45,21 @@
 import { existsSync, mkdirSync, appendFileSync, readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { createHash, randomUUID } from 'crypto';
-import { lookupRate, getCounterfactualDefaults, type RateLookupResult } from './substrate_price_table';
+import { lookupRate, getCounterfactualDefaults, getUnpricedReason, type RateLookupResult } from './substrate_price_table';
+
+// D-BP223-M0-h2cbpo68-032/SEG-M0/BP223-SAVINGS_INSTRUMENT: fixed, stable literal (the price
+// table's local-member-hardware row's own `note` text is stable and long; this is the same
+// disclaimer content in the short form the spec's hard rule requires actually reach a receipt).
+const LOCAL_COST_BASIS_DISCLAIMER = 'excludes hardware and power; see price table disclaimer';
+
+/** Appends a documented unpriced-model reason (see substrate_price_table.ts's
+ *  UnpricedModelEntry) to a base "no rate found" basis string, when one has been recorded --
+ *  distinguishes "confirmed absent from vendor pricing" from a bare, uninvestigated gap. */
+function withUnpricedContext(baseMessage: string, modelId: string, tablePath: string | undefined): string {
+  const documented = getUnpricedReason(modelId, tablePath);
+  if (!documented) return baseMessage;
+  return `${baseMessage}; DOCUMENTED: ${documented.unpriced_reason} (checked_on=${documented.checked_on})`;
+}
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -61,8 +75,22 @@ export interface SavingsReceiptInput {
   tier: SavingsTier;
   /** The router's own routing string, unmapped -- kept verbatim for audit against substrate_router.ts. */
   routing_raw: string;
-  /** Model that actually served the query (e.g. an Ollama tag), or null if none did. */
+  /** Model the caller REQUESTED (e.g. an Ollama tag, or the model_id sent in the Anthropic
+   *  Messages API request body). Kept as the fallback pricing id -- see model_id_from_provider. */
   model_used: string | null;
+  /** D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: the exact model_id string the
+   *  PROVIDER'S OWN RESPONSE echoed back (Anthropic Messages API's top-level `model` field on a
+   *  successful response), when the caller carried one through. This is deliberately a SEPARATE
+   *  field from model_used, not a replacement for it: model_used is what was requested, this is
+   *  what the vendor says actually ran. They are usually identical, but a hardcoded/stale
+   *  requested id, a vendor-side alias, or a future routing feature could make them differ --
+   *  when they do, THIS is the id emitSavingsReceipt() prices against, per the Founder's own
+   *  point that the savings meter (the licensing fee basis) must price the model that actually
+   *  ran, not the one the code merely asked for. null/undefined when no provider response model
+   *  field was carried through (e.g. a failed call, a provider/path that never reports one, or a
+   *  local Ollama call -- see emitSavingsReceipt's own basis-string wording for how this is
+   *  disclosed either way). */
+  model_id_from_provider?: string | null;
   /** Real provider-reported token counts. null when the provider did not report one, or no call was made. */
   input_tokens: number | null;
   output_tokens: number | null;
@@ -83,6 +111,14 @@ export interface SavingsReceipt {
   tier: SavingsTier;
   routing_raw: string;
   model_used: string | null;
+  /** D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: the model_id THIS receipt's
+   *  actual_cost_usd was actually priced against, ONLY when that id was confirmed by the
+   *  provider's own response (never the requested id, never a guess). null whenever no
+   *  provider-reported model id was carried through -- in that case, if actual_cost_usd is a real
+   *  number at all, it was priced against model_used (the requested id) instead, and
+   *  actual_cost_basis says so explicitly in words so a reader never mistakes "assumed from the
+   *  request" for "confirmed by the vendor". See SavingsReceiptInput.model_id_from_provider. */
+  model_id_actual: string | null;
   input_tokens: number | Unmeasured;
   output_tokens: number | Unmeasured;
   latency_ms: number;
@@ -90,6 +126,16 @@ export interface SavingsReceipt {
   flagship_call_avoided: boolean;
   actual_cost_usd: number | Unmeasured;
   actual_cost_basis: string;
+  /** D-BP155-029 item 4 / D-BP223-M0-h2cbpo68-032: present (non-null) ONLY when actual_cost_usd
+   *  was priced against a price-table rate whose provider is "local" (i.e. a real $0 model-call
+   *  cost, not an UNMEASURED gap). The spec's own hard rule (SPEC_...BP143.md:125): "Never claim
+   *  a local-model cost of exactly zero... Either measure them or label the figure 'excluding
+   *  hardware and power.'" The price table's local-member-hardware row has always carried this
+   *  disclaimer in its own `note` field, but substrate_savings_receipt.ts never read that field
+   *  before this fix -- the disclaimer existed and never reached a receipt. Null (not the empty
+   *  string) whenever no local-provider rate was used this receipt, so a consumer can tell
+   *  "not applicable" apart from "somehow blank." */
+  local_cost_basis: string | null;
   counterfactual_model: string | Unmeasured;
   counterfactual_tokens_estimated: boolean;
   counterfactual_cost_usd: number | Unmeasured;
@@ -231,6 +277,13 @@ export function emitSavingsReceipt(input: SavingsReceiptInput): SavingsReceipt {
   let actual_cost_usd: number | Unmeasured = UNMEASURED;
   let actual_cost_basis: string;
   let flagship_call_avoided: boolean;
+  // D-BP155-029 item 4 / D-BP223-M0-h2cbpo68-032: null unless a local-provider rate priced this
+  // receipt -- see the SavingsReceipt field's own doc comment for why this must reach the
+  // receipt itself, not stay buried in the price table's JSON `note` field.
+  let local_cost_basis: string | null = null;
+  // D-BP223-M0-h2cbpo68-MODEL_ROSTER: null unless a provider-reported model id (never the
+  // requested id) priced this receipt's actual_cost_usd -- see the SavingsReceipt field's doc.
+  let model_id_actual: string | null = null;
 
   if (input.tier === 'substrate_hit') {
     // No model call happened at all -- a real, known zero, not an estimate.
@@ -242,12 +295,30 @@ export function emitSavingsReceipt(input: SavingsReceiptInput): SavingsReceipt {
     if (input.input_tokens == null || input.output_tokens == null || !input.model_used) {
       actual_cost_basis = 'local model served the query but real token counts were not reported by the provider; recorded as UNMEASURED rather than guessed';
     } else {
-      const rate = lookupRate(input.model_used, asOf, tablePath);
+      // D-BP223-M0-h2cbpo68-MODEL_ROSTER: price what actually ran. When the provider's own
+      // response carried a model id, price THAT id and record it as model_id_actual; only when
+      // it did not do we fall back to pricing the requested id (model_used), and the basis string
+      // says explicitly which of the two happened so a reader never confuses the two.
+      const pricedModelId = input.model_id_from_provider ?? input.model_used;
+      const rate = lookupRate(pricedModelId, asOf, tablePath);
       if (!rate.ok) {
-        actual_cost_basis = `local model "${input.model_used}" cost could not be priced: ${rate.reason} (${rate.detail})`;
+        actual_cost_basis = withUnpricedContext(
+          `local model "${pricedModelId}" cost could not be priced: ${rate.reason} (${rate.detail})`,
+          pricedModelId,
+          tablePath,
+        );
       } else {
         actual_cost_usd = actualCostFromRate(rate, input.input_tokens, input.output_tokens);
-        actual_cost_basis = `priced at ${input.model_used} table rate, price_table_version=${rate.table_version}, real provider token counts`;
+        model_id_actual = input.model_id_from_provider ?? null;
+        actual_cost_basis = input.model_id_from_provider
+          ? `priced at ${pricedModelId} table rate (PROVIDER-CONFIRMED model id, requested was "${input.model_used}"), price_table_version=${rate.table_version}, real provider token counts`
+          : `priced at ${pricedModelId} table rate (REQUESTED model id; provider did not report a model field to confirm what actually ran), price_table_version=${rate.table_version}, real provider token counts`;
+        if (rate.rate.provider === 'local') {
+          // D-BP155-029 item 4: the spec's hard rule ("Never claim a local-model cost of exactly
+          // zero... label the figure 'excluding hardware and power'") was satisfied in the price
+          // table's own JSON `note` field since 2026-08-03 but never read by this file until now.
+          local_cost_basis = LOCAL_COST_BASIS_DISCLAIMER;
+        }
       }
     }
   } else if (input.tier === 'cloud_escalation') {
@@ -269,12 +340,27 @@ export function emitSavingsReceipt(input: SavingsReceiptInput): SavingsReceipt {
     if (input.input_tokens == null || input.output_tokens == null || !input.model_used) {
       actual_cost_basis = 'cloud escalation was triggered but real provider-reported token counts and/or a model_used were not carried through to this receipt (this is expected from substrate_router.ts\'s routing-signal-only cloud_escalation, which never itself makes a network call); recorded as UNMEASURED rather than guessed';
     } else {
-      const rate = lookupRate(input.model_used, asOf, tablePath);
+      // D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: "the savings meter ... must
+      // price the model that actually ran." When ai_dispatch_ipc.ts's dispatchViaBrain() carried
+      // the Anthropic Messages API response's own top-level `model` field through as
+      // model_id_from_provider, THAT id is what gets priced and recorded as model_id_actual --
+      // never the requested id, even though in practice they are usually identical. Only when no
+      // provider-confirmed id is available do we fall back to pricing the requested id
+      // (model_used), and the basis string always says explicitly which of the two happened.
+      const pricedModelId = input.model_id_from_provider ?? input.model_used;
+      const rate = lookupRate(pricedModelId, asOf, tablePath);
       if (!rate.ok) {
-        actual_cost_basis = `cloud model "${input.model_used}" cost could not be priced: ${rate.reason} (${rate.detail})`;
+        actual_cost_basis = withUnpricedContext(
+          `cloud model "${pricedModelId}" cost could not be priced: ${rate.reason} (${rate.detail})`,
+          pricedModelId,
+          tablePath,
+        );
       } else {
         actual_cost_usd = actualCostFromRate(rate, input.input_tokens, input.output_tokens);
-        actual_cost_basis = `priced at ${input.model_used} table rate, price_table_version=${rate.table_version}, real provider-reported token counts (Anthropic Messages API usage field)`;
+        model_id_actual = input.model_id_from_provider ?? null;
+        actual_cost_basis = input.model_id_from_provider
+          ? `priced at ${pricedModelId} table rate (PROVIDER-CONFIRMED model id via Anthropic Messages API response's own \`model\` field, requested was "${input.model_used}"), price_table_version=${rate.table_version}, real provider-reported token counts`
+          : `priced at ${pricedModelId} table rate (REQUESTED model id; the Anthropic Messages API response did not carry a \`model\` field through to this receipt to confirm what actually ran), price_table_version=${rate.table_version}, real provider-reported token counts`;
       }
     }
   } else {
@@ -329,12 +415,14 @@ export function emitSavingsReceipt(input: SavingsReceiptInput): SavingsReceipt {
     tier: input.tier,
     routing_raw: input.routing_raw,
     model_used: input.model_used,
+    model_id_actual,
     input_tokens: input.input_tokens ?? UNMEASURED,
     output_tokens: input.output_tokens ?? UNMEASURED,
     latency_ms: input.latency_ms,
     degraded: input.degraded,
     flagship_call_avoided,
     actual_cost_usd,
+    local_cost_basis,
     actual_cost_basis,
     counterfactual_model,
     counterfactual_tokens_estimated,
@@ -411,6 +499,56 @@ export function verifySavingsChain(path: string = logPath()): ChainVerifyResult 
   }
 
   return { ok: true, total_records: lines.length, broken_at_index: null, broken_at_query_id: null, reason: null };
+}
+
+// ─── External anchor (item 6, cheapest form) ───────────────────────────────
+
+export interface AnchorDigest {
+  /** The hash-chain's current tip, i.e. the `hash` field of the last record in the log, or the
+   *  GENESIS sentinel if the log is empty. Identical to what readLastHash() computes internally
+   *  for the NEXT record's prev_hash -- this is that same value, exposed for external publication. */
+  chain_head_hash: string;
+  /** How many records the chain has as of this snapshot -- lets a verifier notice a HEAD that
+   *  moved without the record count moving (would itself be a red flag) or vice versa. */
+  total_records: number;
+  /** UTC ISO timestamp this digest was computed, NOT the timestamp of the last record. */
+  anchored_at: string;
+  /** Which receipts log this digest was computed from -- carried through so a published anchor
+   *  is self-describing without needing separate context. */
+  source_log_path: string;
+}
+
+/**
+ * D-BP155-029 item 6 (cheapest credible mitigation) / D-BP223-M0-h2cbpo68-032: the hash chain
+ * (verifySavingsChain above) is tamper-EVIDENT against edits to an existing file, but -- as this
+ * file's own header has said since the meter was first built -- it cannot detect a party who
+ * controls the whole file deleting it and regenerating a clean chain from scratch. This function
+ * is the read side of the cheapest real fix named in the dispute list: compute the current
+ * chain's tip hash and UTC time so SOMETHING outside the licensee's own file can publish it.
+ * This function does NOT publish anywhere itself -- it has no scheduler, no network call, and no
+ * opinion about where the digest goes. See HARDWIRE/tools/controls/savings_anchor_publish.mjs
+ * for the (also unscheduled, run-by-hand) append-only publish step. Wiring EITHER of these to a
+ * timer is MUTATE-SYSTEM (a standing, persistent, automated behavior change) and is above any
+ * seat's rank per this estate's own discipline -- named here, not built here.
+ */
+export function anchorDigest(path: string = logPath()): AnchorDigest {
+  return {
+    chain_head_hash: readLastHash(path),
+    total_records: readAllRecordsForAnchor(path),
+    anchored_at: new Date().toISOString(),
+    source_log_path: path,
+  };
+}
+
+/** Local helper so anchorDigest() does not need to import readAllRecords() before it is declared
+ *  further down this file (readAllRecords is defined in the Period Aggregate section below). A
+ *  plain line count is sufficient here -- malformed lines are verifySavingsChain's job to catch,
+ *  not this counter's. */
+function readAllRecordsForAnchor(path: string): number {
+  if (!existsSync(path)) return 0;
+  const raw = readFileSync(path, 'utf-8').trim();
+  if (!raw) return 0;
+  return raw.split('\n').length;
 }
 
 // ─── Period aggregate ───────────────────────────────────────────────────────
@@ -506,6 +644,18 @@ export function computePeriodAggregate(
     measurement_scope,
     confidence,
   };
+}
+
+/**
+ * D-BP223-BM09-ARCHBISHOP-004-016 ("My Savings Receipt"): the first record's own `ts`, or null
+ * when the chain is empty. Used to compute days-in-use and the elapsed-time half of the launch
+ * incentive's milestone gates (see savings_receipt_milestones.ts) -- reads the raw file directly
+ * via the same readAllRecords() every other reporting function here uses, rather than duplicating
+ * its parse-and-skip-malformed-lines logic at the call site.
+ */
+export function getFirstRecordTimestamp(path: string = logPath()): string | null {
+  const all = readAllRecords(path);
+  return all.length > 0 ? all[0].ts : null;
 }
 
 export { logPath as _savingsReceiptLogPathForTests };

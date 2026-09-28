@@ -82,4 +82,31 @@ if (fs.existsSync(SWEEP_CHECK)) {
 
 console.log('[guarded_tsc_main] lock is free -- proceeding: npx tsc -p ' + tsconfigArg);
 const build = spawnSync('npx', ['tsc', '-p', tsconfigArg], { cwd: MNEMOSYNE_ROOT, stdio: 'inherit', shell: true });
-process.exit(build.status == null ? 1 : build.status);
+const buildStatus = build.status == null ? 1 : build.status;
+if (buildStatus !== 0) {
+  process.exit(buildStatus);
+}
+
+// ─── COPY STEP. D-BP223-BM04-X033S3-011. ───────────────────────────────────────────────────
+//
+// tsc only emits files it actually compiles from .ts/.tsx. Several src/main (and sibling
+// src/shared, src/substrate) modules read a plain .json asset at RUNTIME via
+// fs.readFileSync(resolve(__dirname, ...)) rather than importing it as a TS module -- e.g.
+// src/main/proveit/seed_loader.ts's shipped seed_cards.json / seed_cards_manifest.json (639 seed
+// cards). tsc never touches those files, so a fresh build:main previously produced a dist/main
+// tree missing them entirely -- a packaged build shipped without its seed data. See
+// scripts/copy_main_assets.mjs's own header for the full precedent search and rationale; this is
+// the ONLY place that script is wired in (deliberately not added to package.json for this
+// dispatch), and it only ever runs after a successful compile, never on a failed one.
+console.log('[guarded_tsc_main] tsc succeeded -- copying runtime JSON assets into dist (copy_main_assets.mjs)...');
+const copyAssets = spawnSync(process.execPath, [path.join(__dirname, 'copy_main_assets.mjs')], {
+  cwd: MNEMOSYNE_ROOT,
+  stdio: 'inherit',
+});
+if (copyAssets.status !== 0) {
+  console.error('[guarded_tsc_main] BUILD FAILED (copy_main_assets.mjs) -- tsc succeeded but shipping the '
+    + 'runtime JSON assets into dist failed. See output above.');
+  process.exit(copyAssets.status == null ? 1 : copyAssets.status);
+}
+
+process.exit(0);

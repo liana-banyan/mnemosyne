@@ -8,6 +8,8 @@
  */
 
 import { request as httpRequest } from 'node:http';
+// D-BP223-BM0-X030-098: port 47213 needs the signed frame for non-local requests.
+import { signedArtifactGetHeaders } from './peer_artifact_client';
 
 export interface PeerHashResponse {
   peerId: string;
@@ -30,7 +32,7 @@ export async function queryPeerHash(
     const port = parseInt(portStr, 10);
 
     const req = httpRequest(
-      { host, port, path: `/hash/${encodeURIComponent(version)}`, method: 'GET', timeout: timeoutMs },
+      { host, port, path: `/hash/${encodeURIComponent(version)}`, method: 'GET', timeout: timeoutMs, headers: signedArtifactGetHeaders(`/hash/${encodeURIComponent(version)}`) },
       (res) => {
         let data = '';
         res.on('data', (chunk: Buffer) => { data += chunk.toString(); });

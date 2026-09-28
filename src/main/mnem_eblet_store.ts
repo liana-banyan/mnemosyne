@@ -54,6 +54,7 @@ import {
   mkdirSync,
   writeFileSync,
   renameSync,
+  utimesSync,
   watch,
   type FSWatcher,
 } from 'fs';
@@ -69,6 +70,8 @@ import { semantic_soccerball_emit, computeSemanticSimilarity } from './semantic_
 // exact same tier logic also gates liana_cycle_runner.ts's mintLedgerMark(), and neither write
 // path can drift from the other. See rooting_rule.ts's own header for the full canon citation.
 import { classifyCorroborationTier, isRooted, rootedTraceLabel } from './rooting_rule';
+// D-BP223-BM0-X030-073: stale cutoff C + correction precedence at reuse time.
+import { reuseDecision, type ReuseDecision, type ReuseState, type CorrectionRecord } from './card_freshness/card_freshness';
 
 // ─── Guarded Electron resolution (D-BP148-007/KNIGHT/M1/seg-e7c1) ─────────────
 //
@@ -305,6 +308,22 @@ function resolveEbletStoreRoots(): string[] {
   const envOverride = process.env.MNEM_EBLET_STORE_ROOTS;
   if (envOverride) {
     candidates.push(...envOverride.split(require('path').delimiter).map((p) => p.trim()).filter(Boolean));
+  }
+
+  // D-BP223-BM0-X010-011: test-only escape hatch. MNEM_EBLET_STORE_ROOTS was always
+  // ADDITIVE (see the un-changed comment two lines below) -- a test harness setting it to a
+  // scratch dir still pays the cost of walking the REAL estateDoctrineRoots()/bundled/userData
+  // tiers on top of that scratch dir. That was cheap when the real corpus was a few thousand
+  // files; it is no longer cheap now that HARDWIRE alone holds 46k+ indexable files (the same
+  // growth this ticket's rebuild-floor fix responds to) -- a test that needs a truly isolated,
+  // fast rebuild would otherwise pay a multi-second walk plus a real semantic-embedding pass
+  // over the whole corpus. Setting this to "1" makes the env override EXCLUSIVE (skips every
+  // other tier) instead of additive. Defaults to unset/additive -- zero behavior change for any
+  // real (non-test) process, which never sets this.
+  if (process.env.MNEM_EBLET_STORE_ROOTS_EXCLUSIVE === '1' && envOverride) {
+    const resolved = candidates.filter((root) => { try { return existsSync(root); } catch { return false; } });
+    _resolvedRootsCache = { roots: resolved, warnedEmpty: resolved.length === 0 };
+    return resolved;
   }
 
   // KN-BP147-M2: estate doctrine roots are now real defaults, not an env var a human has
@@ -719,6 +738,16 @@ function getIndexPath(): string {
 let _indexCache: { entries: EbletIndexEntry[]; loadedAt: number } | null = null;
 const INDEX_CACHE_TTL_MS = 60_000; // re-check delta every 60s
 
+// D-BP223-BM0-X030-004: (path|mtime) -> time of the last failed embed, so a rebuild does not
+// re-pay the same fail-soft Ollama timeout on every pass. See the needsEmbed filter in
+// loadOrRebuildIndex(). Overridable via MNEM_EMBED_RETRY_BACKOFF_MS for tests.
+const _embedFailedAt = new Map<string, number>();
+const EMBED_RETRY_BACKOFF_MS = (() => {
+  const raw = process.env.MNEM_EMBED_RETRY_BACKOFF_MS;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 10 * 60_000;
+})();
+
 /**
  * BP132 Yoke #21 E10 (keep-current / self-index refresh) — fix-forward.
  *
@@ -820,6 +849,42 @@ async function loadOrRebuildIndex(): Promise<EbletIndexEntry[]> {
 
   const indexPath = getIndexPath();
   const indexDir = join(indexPath, '..');
+
+  // D-BP223-BM0-X010-025C-ARMBFIX: env-gated fast path for short-lived, subprocess-per-item
+  // harnesses (e.g. mmlu_pro_plow_sweep.cjs) where `_indexCache` above NEVER helps -- each
+  // item spawns a brand-new process with `_indexCache` undefined, so every item pays the full
+  // `rootsMaxMtime()` tree walk below (and, when it finds anything newer than the on-disk
+  // index, a full rebuild + Ollama re-embed) from scratch. Under concurrency and/or
+  // `--keep-the-win`'s two-legs-per-item fan-out this multiplies into concurrent fighting
+  // rewrites of the same `eblet_index.jsonl` plus saturated embed traffic, and the harness's
+  // per-item timeout kills every item (see D-BP223-BM0-X010-025B-ARMB_REPORT.md for the full
+  // trace). When MNEM_EBLET_INDEX_TRUST_CACHE=1 and an on-disk index already exists, skip the
+  // mtime walk AND the rebuild entirely and load the on-disk index as-is -- correct for a
+  // sweep harness reading a corpus some OTHER long-lived process (the live MnemosyneC app)
+  // keeps fresh on its own schedule; wrong as a general default, which is exactly why this is
+  // opt-in only and gated on the env var. With the env var absent or not '1', behavior below is
+  // unchanged from before this patch.
+  if (process.env.MNEM_EBLET_INDEX_TRUST_CACHE === '1' && existsSync(indexPath)) {
+    try {
+      const raw = readFileSync(indexPath, 'utf-8');
+      const entries: EbletIndexEntry[] = [];
+      for (const line of raw.split('\n')) {
+        const t = line.trim();
+        if (!t) continue;
+        try { entries.push(JSON.parse(t) as EbletIndexEntry); } catch { /* skip malformed */ }
+      }
+      _indexCache = { entries, loadedAt: now };
+      console.log(
+        `[EbletIndex] MNEM_EBLET_INDEX_TRUST_CACHE=1: loaded ${entries.length} entries from ` +
+        `disk cache with NO mtime walk and NO rebuild (trusting the on-disk index as-is)`,
+      );
+      return entries;
+    } catch {
+      // Fall through to the normal path below -- e.g. the file vanished between existsSync
+      // and readFileSync above, or every line failed to parse. Never let a trust-cache read
+      // failure be worse than just doing the normal walk/rebuild.
+    }
+  }
 
   // Check if existing index is up-to-date
   let indexMtime = 0;
@@ -1007,7 +1072,23 @@ async function loadOrRebuildIndex(): Promise<EbletIndexEntry[]> {
   // failed embed just leaves that entry's semanticCode absent, it never blocks indexing or
   // fails the rebuild. This is the ONLY place the CANON/HARDWIRE/memory corpus gets embedded
   // -- query time embeds the query text alone (see queryEbletStoreEntries()).
-  const needsEmbed = entries.filter((e) => e.semanticCode === undefined);
+  // D-BP223-BM0-X030-004 (EbletIndex 20 s loop, part 2 of 3). MEASURED main.log 2026-09-16
+  // 17:30-17:31 local: every rebuild re-tried the SAME 3 entries whose embed had already failed,
+  // each retry costing about 8 s of fail-soft timeouts, and the failure is the same every pass.
+  // An entry whose embed failed for this exact (path, mtime) is not retried until
+  // EMBED_RETRY_BACKOFF_MS has passed. It keeps BM25-only ranking in the meantime, exactly as a
+  // failed embed already did. A changed file (new mtime) is never held back.
+  const embedNow = Date.now();
+  const needsEmbed = entries.filter((e) => {
+    if (e.semanticCode !== undefined) return false;
+    const failedAt = _embedFailedAt.get(`${e.path}|${e.mtime}`);
+    return failedAt === undefined || embedNow - failedAt >= EMBED_RETRY_BACKOFF_MS;
+  });
+  const heldBack = entries.filter((e) => e.semanticCode === undefined).length - needsEmbed.length;
+  if (heldBack > 0) {
+    console.log(`[EbletIndex] ${heldBack} entr${heldBack === 1 ? 'y' : 'ies'} with a recent failed embed held back from retry (backoff ${EMBED_RETRY_BACKOFF_MS} ms)`);
+  }
+  let embedSuccesses = 0;
   if (needsEmbed.length > 0) {
     console.log(
       `[EbletIndex] computing semantic codes for ${needsEmbed.length} new/changed ` +
@@ -1020,20 +1101,56 @@ async function loadOrRebuildIndex(): Promise<EbletIndexEntry[]> {
         const code = await semantic_soccerball_emit(`${e.title}\n${e.snippet}`);
         if (code) {
           e.semanticCode = code;
+          embedSuccesses++;
+          _embedFailedAt.delete(`${e.path}|${e.mtime}`);
         } else {
           embedFailures++;
+          _embedFailedAt.set(`${e.path}|${e.mtime}`, Date.now());
         }
       } catch {
         // Belt-and-suspenders: semantic_soccerball_emit's own contract is fail-soft
         // (returns null, never throws), but a rebuild must never abort on ANY per-entry
         // failure regardless of which layer it originated in.
         embedFailures++;
+        _embedFailedAt.set(`${e.path}|${e.mtime}`, Date.now());
       }
     });
     console.log(
       `[EbletIndex] semantic code fill complete: ${needsEmbed.length - embedFailures}/` +
       `${needsEmbed.length} succeeded${embedFailures > 0 ? ` (${embedFailures} fail-soft, Ollama likely unreachable -- those entries fall back to BM25-only ranking)` : ''}`,
     );
+  }
+
+  // D-BP223-BM0-X030-004 (EbletIndex 20 s loop, part 3 of 3). MEASURED: every pass logged
+  // "56907/56907 unchanged+already-checked ... 0 new/changed" and still rewrote the full
+  // 32,644,013-byte eblet_index.jsonl, about 4,320 times a day (about 141 GB/day of writes for no
+  // change). When the walk proves the index content is identical to what is on disk (every path
+  // reused verbatim, no path added or removed, no backfill, no new embed), skip the rewrite and
+  // only stamp the index mtime with THIS pass's start time, so the rootsMtime > indexMtime check
+  // above is satisfied for everything this pass already saw. Stamping the start time, not the end
+  // time, means any file touched during the walk still reads as newer next time.
+  const indexUnchanged =
+    existsSync(indexPath) &&
+    reusedZeroIoCount === allPaths.length &&
+    reusedBackfillCount === 0 &&
+    embedSuccesses === 0 &&
+    priorByPath.size === entries.length;
+  if (indexUnchanged) {
+    try {
+      // Stamp = max(pass start, the roots mtime observed BEFORE the walk). rootsMtime can sit a
+      // fraction of a millisecond above the integer Date.now() start (measured: noise file
+      // ...816.1387 vs start ...816), and every change it reflects was visible to the walk that
+      // followed it. Passed as fractional seconds so NTFS keeps sub-millisecond precision.
+      // +0.001 ms (10 NTFS ticks): the seconds-double to FILETIME conversion can truncate one
+      // tick below rootsMtime, which would re-trigger the walk on the next check (seen in Test 7).
+      const stampMs = Math.max(now, rootsMtime) + 0.001;
+      utimesSync(indexPath, Date.now() / 1000, stampMs / 1000);
+      console.log(`[EbletIndex] Index content unchanged (${entries.length} entries); skipped rewrite, stamped mtime only`);
+      _indexCache = { entries, loadedAt: now };
+      return entries;
+    } catch (e) {
+      console.warn('[EbletIndex] mtime stamp failed, falling back to full rewrite:', e);
+    }
   }
 
   // Write index atomically
@@ -1094,38 +1211,140 @@ let _lastChangeDetectedAt: number | null = null;
 /** Result of the most recently COMPLETED watcher-triggered (or force-refresh-triggered)
  *  background rebuild attempt. `null` until the first one runs. */
 let _lastRebuildOutcome: RebuildOutcome | null = null;
-/** Guards against overlapping background rebuilds when several fs.watch events debounce in
- *  quick succession (e.g. an editor that writes a file twice on save) -- coalesces to one
- *  in-flight rebuild rather than firing a fresh loadOrRebuildIndex() per event. */
-let _rebuildInFlight: Promise<void> | null = null;
+// D-BP223-BM0-X010-011B-STARTHANG (fix-forward on top of D-BP223-BM0-X010-011): `_rebuildInFlight`
+// and `_lastRebuildStartedAt` used to be private to triggerBackgroundRebuild() -- warmEbletIndex()
+// (the boot-time warm-up, index.ts's fire-and-forget call made BEFORE startEbletIndexWatchers())
+// and forceRefreshEbletIndex() both called loadOrRebuildIndex() DIRECTLY, invisible to both the
+// floor and the in-flight guard. On a live, continuously-writing estate (HARDWIRE churn, see
+// D-BP223-BM0-X010-011's own measurement), the FIRST fs.watch event to settle after boot fires
+// triggerBackgroundRebuild() while warmEbletIndex()'s own loadOrRebuildIndex() call is very
+// plausibly still mid-walk -- and because _lastRebuildStartedAt was still 0 (warmEbletIndex()
+// never set it) and _rebuildInFlight was still null (warmEbletIndex() never set that either), the
+// floor check `_lastRebuildStartedAt > 0 && elapsed < MIN_REBUILD_INTERVAL_MS` evaluates false and
+// the in-flight guard is a no-op: a SECOND, fully independent loadOrRebuildIndex() call starts,
+// re-walking the same 50k+-file corpus and racing the first call's writeFileSync(tmp)/renameSync
+// of the SAME eblet_index.jsonl.tmp path. Two synchronous full-corpus walks (each dominated by
+// zero-yield statSync/readFileSync loops with no await inside them, see rootsMaxMtime() and the
+// entries-loop above) racing on a live filesystem is the most direct, source-confirmed explanation
+// for a boot that never reaches a window: whichever call is mid-walk when the second one starts
+// monopolizes the single JS thread for however long ITS walk takes, and the two temp-file writers
+// can contend for the same Windows file handle. FIX: every entry point into a background/warm
+// rebuild (warmEbletIndex, forceRefreshEbletIndex, triggerBackgroundRebuild) now goes through
+// runGuardedRebuild() below, which is the SOLE place `_rebuildInFlight`/`_lastRebuildStartedAt`
+// are set -- a rebuild already in flight is coalesced (every caller awaits the SAME promise, not a
+// fresh call), and the floor now correctly sees a boot-time warm-up as "a rebuild is running."
+/** Guards against overlapping rebuilds from ANY entry point (boot warm-up, watcher-triggered,
+ *  or explicit force-refresh) -- coalesces to one in-flight loadOrRebuildIndex() call rather than
+ *  ever firing two concurrent walks of the same corpus. See runGuardedRebuild(). */
+let _rebuildInFlight: Promise<EbletIndexEntry[]> | null = null;
 
 const WATCH_DEBOUNCE_MS = 1500;
 const _activeWatchers: FSWatcher[] = [];
 const _watcherDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const _watcherSetupErrors: string[] = [];
 
+// D-BP223-BM0-X010-011 (INDEXLOOP fix-forward): floor between watcher-triggered
+// loadOrRebuildIndex() *executions*. WATCH_DEBOUNCE_MS only coalesces events within a single
+// 1.5s settle window per root -- it does nothing to stop a root that keeps producing a fresh
+// settle-worthy burst every few seconds, indefinitely, from re-running a FULL rebuild every
+// single time. MEASURED (main.log, 2026-09-10 12:41-12:56 Central, pid 23004 pinned ~92% of
+// one core): 101 real "[EbletIndex] Rebuilding index..." passes in ~15 minutes (~1 every 9s,
+// some as close as 4.8s apart), each costing ~1.2-1.9s wall (readdirSync+statSync across
+// 48,402 indexable files under 6 roots, dominated by LianaBanyanPlatform\HARDWIRE's 46,216 --
+// ~48k new eblet files landed there the night before) PLUS an un-logged, equally expensive
+// rootsMaxMtime()/treeMaxMtime() full-tree stat pass immediately before it. Every single one
+// of those 101 rebuilds reported "48402/48402 unchanged+already-checked" -- the INDEXABLE
+// content never changed; what changed was something else under the (continuously, actively
+// written-to) HARDWIRE ledger tree bumping a directory or file mtime treeMaxMtime() picks up
+// unconditionally (it is not filtered by isIndexableEbletFile the way walkEbletStore() is).
+// Before the 48k-file jump this same mechanism existed but a full walk cost well under 100ms,
+// so back-to-back triggers never overlapped and the loop was invisible.
+//
+// FIX (smallest available, single mechanism, no root scoping -- the Founder wants the
+// substrate to see everything, not less): a floor on how often a watcher-triggered rebuild is
+// allowed to actually RUN. invalidateIndexCache() below still fires on every settled debounce,
+// same as before, so a query that arrives mid-floor still self-heals via loadOrRebuildIndex()'s
+// own on-disk mtime check (see that function) and getIndexFreshnessSignal() still reports the
+// pending change honestly -- this floor only paces the automatic BACKGROUND rebuild the watcher
+// kicks off for its own sake, not correctness for an actual caller. A trigger that arrives
+// inside the floor is not dropped: it is coalesced into one deferred retry for when the floor
+// next opens, so the freshest known-pending state is always what eventually gets indexed.
+// Overridable via MNEM_REBUILD_FLOOR_MS for fast, deterministic tests (see
+// mnem_eblet_store.test.ts Test 4) -- production default is unaffected by that override being
+// absent.
+const MIN_REBUILD_INTERVAL_MS = (() => {
+  const raw = process.env.MNEM_REBUILD_FLOOR_MS;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 20_000;
+})();
+let _lastRebuildStartedAt = 0;
+let _pendingRebuildFloorTimer: ReturnType<typeof setTimeout> | null = null;
+
 /**
- * Invalidate the cache immediately (so the NEXT query, whenever it comes, is forced to
- * re-check disk regardless of the 60s TTL) and kick a background rebuild so the index is
- * already warm by the time that query arrives. Coalesces concurrent calls into one in-flight
- * rebuild. Never throws -- failure is recorded into `_lastRebuildOutcome`, not propagated,
- * because this runs from an fs.watch callback with no caller to report to.
+ * D-BP223-BM0-X010-011B-STARTHANG: the SOLE place `_rebuildInFlight` and `_lastRebuildStartedAt`
+ * are written. Every path that wants a rebuild to actually run (boot warm-up, an explicit
+ * force-refresh, or a watcher trigger past the floor) calls this instead of `loadOrRebuildIndex()`
+ * directly, so a rebuild that is already running -- from ANY of those three callers -- is always
+ * visible to all the others: a second caller awaits the SAME in-flight promise instead of starting
+ * an independent second full-corpus walk. Never throws (mirrors loadOrRebuildIndex()'s own
+ * fail-soft-per-entry contract at the call-site level); a failure is recorded into
+ * `_lastRebuildOutcome` and the empty/whatever-was-cached-before array is what callers observe via
+ * a subsequent loadOrRebuildIndex() cache check, same as before this fix.
  */
-function triggerBackgroundRebuild(reason: string): void {
-  invalidateIndexCache();
-  if (_rebuildInFlight) return; // a rebuild is already in flight; it will pick up the latest state
+function runGuardedRebuild(): Promise<EbletIndexEntry[]> {
+  if (_rebuildInFlight) return _rebuildInFlight; // coalesce -- do not start a second walk
+  _lastRebuildStartedAt = Date.now();
   _rebuildInFlight = (async () => {
     try {
-      await loadOrRebuildIndex();
+      const entries = await loadOrRebuildIndex();
       _lastRebuildOutcome = { status: 'ok', at: Date.now() };
+      return entries;
     } catch (e) {
       const reasonMsg = e instanceof Error ? (e.stack ?? e.message) : String(e);
       _lastRebuildOutcome = { status: 'failed', at: Date.now(), error: reasonMsg };
-      console.error(`[EbletIndex] background rebuild FAILED (trigger: ${reason}):`, e);
+      console.error('[EbletIndex] guarded rebuild FAILED:', e);
+      return [];
     } finally {
       _rebuildInFlight = null;
     }
   })();
+  return _rebuildInFlight;
+}
+
+/**
+ * Invalidate the cache immediately (so the NEXT query, whenever it comes, is forced to
+ * re-check disk regardless of the 60s TTL) and kick a background rebuild so the index is
+ * already warm by the time that query arrives. Coalesces concurrent calls into one in-flight
+ * rebuild (via runGuardedRebuild(), shared with warmEbletIndex()/forceRefreshEbletIndex() -- see
+ * that function's own comment for why sharing this guard across ALL three entry points is the
+ * fix, not just this one), and paces repeated triggers to at most one real rebuild per
+ * MIN_REBUILD_INTERVAL_MS (see that constant's own comment -- D-BP223-BM0-X010-011). Never
+ * throws -- failure is recorded into `_lastRebuildOutcome`, not propagated, because this runs
+ * from an fs.watch callback with no caller to report to.
+ */
+function triggerBackgroundRebuild(reason: string): void {
+  invalidateIndexCache();
+  if (_rebuildInFlight) return; // a rebuild is already in flight (from ANY entry point); it will pick up the latest state
+
+  const elapsed = Date.now() - _lastRebuildStartedAt;
+  if (_lastRebuildStartedAt > 0 && elapsed < MIN_REBUILD_INTERVAL_MS) {
+    // Inside the floor: do not run a rebuild now, but do not drop this trigger either -- one
+    // deferred retry is already enough to pick up EVERY event that arrived during the floor,
+    // because triggerBackgroundRebuild() re-reads the (already invalidated) cache state when it
+    // finally runs rather than replaying stale per-event data.
+    if (!_pendingRebuildFloorTimer) {
+      const delay = MIN_REBUILD_INTERVAL_MS - elapsed;
+      _pendingRebuildFloorTimer = setTimeout(() => {
+        _pendingRebuildFloorTimer = null;
+        triggerBackgroundRebuild(`${reason} (deferred by rebuild floor, was ${delay}ms out)`);
+      }, delay);
+    }
+    return;
+  }
+
+  // D-BP223-BM0-X030-004: name the trigger, so the next loop is diagnosable from main.log alone.
+  console.log(`[EbletIndex] background rebuild triggered by ${reason}`);
+  void runGuardedRebuild();
 }
 
 /**
@@ -1141,6 +1360,34 @@ function triggerBackgroundRebuild(reason: string): void {
  * `_watcherSetupErrors` rather than silently leaving that one root unmonitored with no signal
  * -- surfaced via getEbletIndexStats().watcherErrors.
  */
+/** D-BP223-BM0-X030-004: true when an fs.watch event could change the index for `root`.
+ *  Exported for tests only. */
+export function isWatchEventRelevant(
+  root: string,
+  filename: string | Buffer | null | undefined,
+  eventType?: string,
+): boolean {
+  if (filename === null || filename === undefined) return true;
+  const name = basename(String(filename));
+  if (!name) return true;
+  if (name.endsWith('.tmp')) return false;
+  const hasExtension = /\.[A-Za-z0-9]{1,10}$/.test(name);
+  if (!hasExtension) {
+    // Windows recursive fs.watch reports a 'change' on a DIRECTORY whenever any child inside it
+    // is modified (measured in Test 8: appending to LEDGER\churn.jsonl fired a 'change' for
+    // "LEDGER"). The child's own event already carries its real file name, so a 'change' on an
+    // existing directory adds nothing and is ignored. A 'rename' (created, deleted, renamed) or
+    // a name that no longer exists stays relevant.
+    if (eventType === 'change') {
+      try {
+        if (statSync(join(root, String(filename))).isDirectory()) return false;
+      } catch { /* vanished: relevant */ }
+    }
+    return true;
+  }
+  return isIndexableEbletFile(name, root);
+}
+
 export function startEbletIndexWatchers(): void {
   if (_activeWatchers.length > 0) return; // already running
   const roots = getEbletStoreRoots();
@@ -1148,7 +1395,16 @@ export function startEbletIndexWatchers(): void {
     if (!existsSync(root)) continue;
     const shallow = SHALLOW_PATTERN_ROOTS.has(root);
     try {
-      const watcher = watch(root, { recursive: !shallow }, (_eventType, filename) => {
+      const watcher = watch(root, { recursive: !shallow }, (eventType, filename) => {
+        // D-BP223-BM0-X030-004 (EbletIndex 20 s loop, part 1 of 3). MEASURED: the live estate
+        // writes non-indexable files (ledger .jsonl/.json/.log, scripts, .tmp) under the watched
+        // roots every few seconds, so a full rebuild ran every MIN_REBUILD_INTERVAL_MS (20 s)
+        // indefinitely while every pass reported 0 new/changed entries. An event whose file name
+        // carries an extension and is provably not indexable for this root is ignored here. An
+        // event with no file name, or a name with no extension (a directory add/remove/rename),
+        // still triggers, so coverage is not narrowed; the lazy TTL mtime check in
+        // loadOrRebuildIndex() remains the backstop for anything this filter skips.
+        if (!isWatchEventRelevant(root, filename, eventType)) return;
         _lastChangeDetectedAt = Date.now();
         const key = root; // one debounce timer per root -- rapid multi-file edits collapse to one rebuild
         const existing = _watcherDebounceTimers.get(key);
@@ -1178,6 +1434,12 @@ export function stopEbletIndexWatchers(): void {
   }
   for (const t of _watcherDebounceTimers.values()) clearTimeout(t);
   _watcherDebounceTimers.clear();
+  // D-BP223-BM0-X010-011: also clear any pending rebuild-floor retry so teardown does not leave
+  // a dangling setTimeout that fires triggerBackgroundRebuild() after watchers are stopped.
+  if (_pendingRebuildFloorTimer) {
+    clearTimeout(_pendingRebuildFloorTimer);
+    _pendingRebuildFloorTimer = null;
+  }
 }
 
 /**
@@ -1191,14 +1453,25 @@ export function stopEbletIndexWatchers(): void {
  */
 export async function forceRefreshEbletIndex(): Promise<EbletIndexStats> {
   invalidateIndexCache();
-  try {
-    await loadOrRebuildIndex();
-    _lastRebuildOutcome = { status: 'ok', at: Date.now() };
-  } catch (e) {
-    const reasonMsg = e instanceof Error ? (e.stack ?? e.message) : String(e);
-    _lastRebuildOutcome = { status: 'failed', at: Date.now(), error: reasonMsg };
-    console.error('[EbletIndex] forceRefreshEbletIndex FAILED:', e);
+  // D-BP223-BM0-X029-007. MEASURED ON M0 2026-09-16T19:29Z: resolveEbletStoreRoots() caches the roots that EXISTED at
+  // first resolution. {userData}\eblets did not exist when M0's app started, so 190 Hollerith card eblets written there
+  // (and every card a mesh library pull writes on a fresh node) stayed out of eblet_index.jsonl -- 0 matches after the
+  // debounced rebuild -- until an app restart. A FORCED refresh is exactly the "I just wrote files, reread now" contract,
+  // so it re-resolves the root list too. The lazy TTL path and the watchers are unchanged.
+  _resolvedRootsCache = null;
+  // D-BP223-BM0-X010-011B-STARTHANG: route through the SAME guard warmEbletIndex() and
+  // triggerBackgroundRebuild() use (runGuardedRebuild()), never loadOrRebuildIndex() directly --
+  // that direct-call gap (a boot-time or watcher-triggered rebuild invisible to this function,
+  // and vice versa) is what let two full-corpus walks race each other. If one is already in
+  // flight, await it first rather than stacking a second concurrent walk on top of it -- then
+  // force one MORE guarded pass, because this function's documented contract ("I just wrote a
+  // file, reread now") is not satisfied by an in-flight rebuild whose own rootsMaxMtime() snapshot
+  // may predate that write; only a rebuild started AFTER the in-flight one finishes is guaranteed
+  // to see it.
+  if (_rebuildInFlight) {
+    await _rebuildInFlight;
   }
+  await runGuardedRebuild();
   return getEbletIndexStats();
 }
 
@@ -1252,8 +1525,24 @@ export function getIndexFreshnessSignal(): { stale: boolean; reason?: string } {
  */
 export async function warmEbletIndex(): Promise<EbletIndexStats> {
   try {
-    const entries = await loadOrRebuildIndex();
+    // D-BP223-BM0-X010-011B-STARTHANG: runGuardedRebuild(), not loadOrRebuildIndex() directly --
+    // this boot-time call must be visible to the SAME in-flight guard and MIN_REBUILD_INTERVAL_MS
+    // floor that triggerBackgroundRebuild() uses, so a watcher event settling while this warm-up
+    // is still mid-walk coalesces onto it instead of firing an independent second full-corpus
+    // walk (see runGuardedRebuild()'s own comment for the race this closes). Fail-soft internally
+    // (never throws), so the catch below now only guards getEbletIndexStats()/getEbletStoreRoots().
+    const entries = await runGuardedRebuild();
     const stats = getEbletIndexStats();
+    if (_lastRebuildOutcome?.status === 'failed') {
+      console.error('[EbletIndex] warm-on-boot FAILED (non-fatal to app boot):', _lastRebuildOutcome.error);
+      return {
+        totalIndexed: stats.totalIndexed,
+        byCategory: stats.byCategory,
+        lastRefreshTimestamp: stats.lastRefreshTimestamp,
+        status: 'failed',
+        error: _lastRebuildOutcome.error,
+      };
+    }
     console.log(
       `[EbletIndex] warm-on-boot complete: ${entries.length} entries indexed ` +
       `(roots=${getEbletStoreRoots().length})`,
@@ -1640,6 +1929,14 @@ export async function queryEbletStoreWithProvenance(query: string): Promise<Eble
 // ─── SEG-4 v0.1.56: Verified eblet writer · SEG-1 v0.1.57: HOT retrieve path ──
 
 export interface VerifiedEbletEntry {
+  /** D-BP223-BM0-X030-073, READ-TIME ONLY (never written): set by applyReuseFreshness() in queryVerifiedEblets. Absent means
+   *  the entry was not checked (other readers). 'prior_record_reverify' entries must never be served as verified. */
+  reuse_state?: ReuseState;
+  reuse_label?: string;
+  freshness?: ReuseDecision;
+  /** D-BP223-BM0-X030-073, OPTIONAL metadata a writer may set to pin the freshness class (canon | volatile | general). */
+  freshness_class?: 'canon' | 'volatile' | 'general';
+  tags?: string[];
   question: string;
   answer: string;
   provenance: string;   // format: spider:<name>:<session> | sprite:<id>:<session>
@@ -2450,6 +2747,32 @@ function tokenizeQuestion(text: string): string[] {
     .filter((w) => !VERIFIED_STOP_WORDS.has(w));
 }
 
+/** D-BP223-BM0-X030-073: an appended correction row, not a Q/A entry. */
+export function isCorrectionShapedRow(row: unknown): boolean {
+  if (!row || typeof row !== 'object') return false;
+  const r = row as Record<string, unknown>;
+  const k = String(r.kind ?? '').toLowerCase();
+  const a = String(r.addendum_type ?? '').toLowerCase();
+  return k === 'correction' || k === 'supersede' || k === 'superseded' || a === 'correction' || a === 'supersede' || a === 'source';
+}
+
+/** D-BP223-BM0-X030-073: the reuse check. Drops corrected entries, labels aged ones. Pure; exported for tests. */
+export function applyReuseFreshness(entries: VerifiedEbletEntry[], corrections: CorrectionRecord[], nowMs: number): VerifiedEbletEntry[] {
+  const out: VerifiedEbletEntry[] = [];
+  let corrected = 0;
+  let aged = 0;
+  for (const e of entries) {
+    const d = reuseDecision({ question: e.question, provenance: e.provenance, sha256: e.sha256, timestamp: e.timestamp, freshness_class: e.freshness_class, tags: e.tags }, nowMs, corrections);
+    if (d.state === 'corrected') { corrected++; continue; }
+    if (d.state === 'prior_record_reverify') aged++;
+    out.push({ ...e, reuse_state: d.state, reuse_label: d.label, freshness: d });
+  }
+  if (corrected || aged) {
+    console.log(`[EbletStore] queryVerifiedEblets: ${corrected} corrected entry(ies) withheld as the old answer, ${aged} aged entry(ies) labeled "Prior record, re-verify" (X030-073, nothing on disk touched)`);
+  }
+  return out;
+}
+
 /**
  * Query the persistent verified eblet store ({userData}/substrate/verified_eblets.jsonl)
  * for Q&A pairs relevant to the user's question.
@@ -2482,11 +2805,18 @@ export async function queryVerifiedEblets(question: string, topK = 3): Promise<V
   }
 
   const rawEntries: VerifiedEbletEntry[] = [];
+  // D-BP223-BM0-X030-073: appended correction rows (kind correction/supersede, or a correction/source addendum) live in the
+  // same append-only file. They carry no question/answer, so the filter below never admitted them; they are now read here.
+  const correctionRows: CorrectionRecord[] = [];
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
-      const parsed = JSON.parse(trimmed) as Partial<VerifiedEbletEntry>;
+      const parsed = JSON.parse(trimmed) as Partial<VerifiedEbletEntry> & CorrectionRecord;
+      if (isCorrectionShapedRow(parsed)) {
+        correctionRows.push(parsed as CorrectionRecord);
+        continue;
+      }
       if (parsed.question && parsed.answer && parsed.sha256 && parsed.verified === true) {
         rawEntries.push(parsed as VerifiedEbletEntry);
       }
@@ -2547,8 +2877,8 @@ export async function queryVerifiedEblets(question: string, topK = 3): Promise<V
   // above -- see isEmptyAnswerBodyShapedEblet()'s doc comment for the full empirical basis. This
   // is deliberately question-shape-independent, plugging the exact gap KN-BP142-6 traced in FIX
   // 1 (a short, non-"?" question let a bare-letter, empty-body answer sail through).
-  const entries = afterScrapeShapeQuarantine.filter((e) => !isEmptyAnswerBodyShapedEblet(e));
-  const emptyBodyQuarantinedCount = afterScrapeShapeQuarantine.length - entries.length;
+  const afterEmptyBody = afterScrapeShapeQuarantine.filter((e) => !isEmptyAnswerBodyShapedEblet(e));
+  const emptyBodyQuarantinedCount = afterScrapeShapeQuarantine.length - afterEmptyBody.length;
   if (emptyBodyQuarantinedCount > 0) {
     console.log(
       `[EbletStore] queryVerifiedEblets: excluded ${emptyBodyQuarantinedCount} empty-answer-body ` +
@@ -2556,6 +2886,11 @@ export async function queryVerifiedEblets(question: string, topK = 3): Promise<V
       `not deleted)`,
     );
   }
+
+  // D-BP223-BM0-X030-073 STALE CUTOFF C: correction first, then age on the existing decay score (card_freshness.ts).
+  // A corrected entry is never returned as the old answer. An aged entry is returned labeled "Prior record, re-verify"
+  // (reuse_state prior_record_reverify), and the serve gate in ai_dispatch_ipc.ts never serves it as verified.
+  const entries = applyReuseFreshness(afterEmptyBody, correctionRows, Date.now());
 
   if (entries.length === 0) return [];
 

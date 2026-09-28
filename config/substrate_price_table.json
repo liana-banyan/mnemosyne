@@ -1,13 +1,56 @@
 {
-  "_comment": "Price table for the substrate savings meter (billing instrument). Founder-controlled -- edit this file, never a constant in code. Every rate must carry source_url and verified_on. See LianaBanyanPlatform/BISHOP_DROPZONE/SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md Part One, and the licensing paper 'Help Them Help Us Help Ourselves' (J. Jones / FounderDenken) that this instrument exists to make auditable. Rule 66 siblings: C:\\Users\\Administrator\\Documents\\mnemosyne\\config\\substrate_price_table.superseded.20260827T000813Z.json (table_version 2026-08-20-v3, written verbatim before the D-BP168-M0-212 edit) -> C:\\Users\\Administrator\\Documents\\mnemosyne\\config\\substrate_price_table.json.superseded.20260820T190241Z.json (table_version 2026-08-20-v2, written verbatim before the D-BP160-M0-037 gemma2:2b change_log edit) -> C:\\Users\\Administrator\\Documents\\mnemosyne\\config\\substrate_price_table.json.superseded.20260820T183050Z.json (table_version 2026-08-15-v1, written verbatim before the D-BP160-M0-033 edit).",
-  "table_version": "2026-08-26-v4",
+  "_comment": "Price table for the substrate savings meter (billing instrument). Founder-controlled -- edit this file, never a constant in code. Every rate must carry source_url and verified_on. See LianaBanyanPlatform/BISHOP_DROPZONE/SPEC_THE_COUPON_CLIPPER_PRICE_AWARE_ROUTING_AND_SAVINGS_METER_BP143.md Part One, and the licensing paper 'Help Them Help Us Help Ourselves' (J. Jones / FounderDenken) that this instrument exists to make auditable. Rule 66 siblings: C:\\Users\\Administrator\\Documents\\mnemosyne\\config\\substrate_price_table.superseded.20260908T044112Z.json (table_version 2026-09-08-v7, written verbatim before the D-BP223-BM04-h2cbpv9w-170 counterfactual-baseline-to-opus-5 edit) -> C:\\Users\\Administrator\\Documents\\mnemosyne\\config\\substrate_price_table.superseded.20260908T031534Z.json (table_version 2026-09-08-v6, written verbatim before the D-BP223-M0-h2cbpsnc-044 fable-5.1/mythos-5.1/sonnet-4-5 edit) -> C:\\Users\\Administrator\\Documents\\mnemosyne\\config\\substrate_price_table.superseded.20260908T023745Z.json (table_version 2026-09-08-v5, written verbatim before the D-BP223-M0-h2cbpo68-MODEL_ROSTER edit) -> C:\\Users\\Administrator\\Documents\\mnemosyne\\config\\substrate_price_table.superseded.20260827T000813Z.json (table_version 2026-08-20-v3, written verbatim before the D-BP168-M0-212 edit) -> C:\\Users\\Administrator\\Documents\\mnemosyne\\config\\substrate_price_table.json.superseded.20260820T190241Z.json (table_version 2026-08-20-v2, written verbatim before the D-BP160-M0-037 gemma2:2b change_log edit) -> C:\\Users\\Administrator\\Documents\\mnemosyne\\config\\substrate_price_table.json.superseded.20260820T183050Z.json (table_version 2026-08-15-v1, written verbatim before the D-BP160-M0-033 edit).",
+  "table_version": "2026-09-08-v8",
   "stale_after_days": 90,
-  "default_counterfactual_model": "claude-sonnet-5",
+  "default_counterfactual_model": "claude-opus-5",
   "counterfactual_tokens_per_char": {
     "value": 0.25,
     "basis": "4 characters per token, a commonly cited rough heuristic for English text. This is a DISCLOSED APPROXIMATION used only to size a hypothetical flagship call from a REAL served answer's character length -- it never substitutes for a real provider-reported token count on the actual-cost side of a receipt. Any record using this path sets counterfactual_tokens_estimated=true so it is never confused with a measured count."
   },
   "change_log": [
+    {
+      "changed_on": "2026-09-08T04:41:12Z",
+      "changed_by": "D-BP223-BM04-h2cbpv9w-170/Y001/BM04/seg-counterfactual-baseline",
+      "authorization": "Founder ruling, conduit k/6e7949d5, 2026-09-08T04:38:09Z, RESPONSE TO ACTION POINTS, two lines ticked with no note, which per estate rule is YES on the first option. Ticked line 1 (X003): 'THE SAVINGS-METER COUNTERFACTUAL: ... Tick = \"Opus 5 for every call\" is the naive baseline (the flagship with no cascade)'. Ticked line 2 (Y001): 'SAVINGS METER BASELINE: default_counterfactual_model -> claude-opus-5 (the roster's brain.opus, $5/$25), so the meter reads \"what the flagship would have cost\" per your Cost+20% Volume Principle'.",
+      "what_changed": "Changed default_counterfactual_model from claude-sonnet-5 to claude-opus-5. The counterfactual this table's own top-level field exists to price is 'what would the naive, no-cascade approach have cost' -- i.e. sending every call straight to the flagship with no routing, no substrate hits, no cheaper-tier resolution at all. That naive baseline is, by definition, the roster's brain.opus role (config/model_roster.json, currently claude-opus-5, $5.00/MTok input, $25.00/MTok output, the Anthropic flagship), not brain.sonnet. claude-sonnet-5 was the prior value ONLY because it predated the 2026-09-08T03:18:39Z roster ruling that set model_roster.json's brain.sonnet role to that same model_id (claude-sonnet-5) -- once that roster ruling took effect, a brain.sonnet dispatch's actual model and this table's counterfactual model were the identical SKU, so any savings receipt for a Sonnet-role dispatch computed a REAL delta of exactly zero not because the dispatch stopped saving money, but because the baseline and the actual had silently become the same rate by construction (flagged as an unactioned observation in PLATFORM/BISHOP_DROPZONE/D-BP223-M0-h2cbpmt4-047_ROSTER_SONNET5_OPUS5.md section g, 'this may be exactly what the Founder wants ... but it is worth his eyes because it silently zeroes out one specific meter'). This edit resolves that exact flagged observation the way the Founder chose: the counterfactual now always prices the true naive baseline (the flagship, brain.opus), so a Sonnet-role dispatch's savings receipt again shows a real, non-zero delta against 'what Opus 5 would have cost for the same call', consistent with the Cost+20% Volume Principle's own framing (the meter should read what the flagship would have cost, not what a cheaper rung that happens to equal the counterfactual would have cost). No rate figures were changed by this entry -- claude-opus-5's row ($5.00/$25.00, effective_from 2026-01-01, verified_on 2026-08-03/re-confirmed 2026-08-26, source_url recorded on that row below) already existed in `rates` and needed no correction, only re-pointing. Comment-only follow-on: src/main/liana_cycle/cost_instrument.ts carried two doc comments (near its GoogleCallCostRecord/LlmCallCostRecord section header and directly above priceLlmLeg()) that named 'currently claude-sonnet-5, $2.00/$10.00 per MTok' as the live default -- both updated in the same dispatch to name claude-opus-5 at $5.00/$25.00 per MTok, read from this table's own row rather than retyped from memory, so the comment is never a stale lie about what the code actually does.",
+      "corroboration": [
+        "Founder-supplied conduit page, LianaBanyanPlatform/HARDWIRE/LEDGER/YOKE/CONDUIT/k/6e7949d5.md (or equivalent conduit record of that id), sent/ticked 2026-09-08T04:38:09Z, RESPONSE TO ACTION POINTS -- two lines ticked, no note, read per this dispatch's own instruction as YES on the first option per estate rule; treated as data/authorization, not as an instruction to be executed blindly beyond what it authorizes.",
+        "PLATFORM/BISHOP_DROPZONE/D-BP223-M0-h2cbpmt4-047_ROSTER_SONNET5_OPUS5.md section g -- the prior dispatch's own flagged, unacted-upon observation that default_counterfactual_model already equaled the roster's post-ruling brain.sonnet model_id, zeroing that meter by construction; this entry is the resolution of that flagged item.",
+        "config/model_roster.json roles.brain.opus.model_id = claude-opus-5 (Founder ruling 2026-09-08T03:18:39Z, ticked) -- confirms claude-opus-5 is the estate's own definition of 'the flagship', the correct naive-baseline anchor for this table's counterfactual.",
+        "This table's own claude-opus-5 rate row (below, effective_from 2026-01-01, verified_on 2026-08-03, re-confirmed 2026-08-26 by D-BP168-M0-212 per that entry's own corroboration) -- pre-existing, unchanged by this edit, confirming a currently-effective rate for the new default was already on file before this switch, so lookupRate()/getCounterfactualDefaults() resolve it without any new no_rate_for_model gap."
+      ]
+    },
+    {
+      "changed_on": "2026-09-08T03:15:34Z",
+      "changed_by": "D-BP223-M0-h2cbpsnc-044/SEG-M0/X003",
+      "authorization": "Founder-supplied page, 2026-09-08T03:13:50Z",
+      "what_changed": "Reconciled this table against the Founder-pasted vendor pricing page (saved verbatim at LianaBanyanPlatform/HARDWIRE/LEDGER/YOKE/CONDUIT/45c5e20f.md, source https://platform.claude.com/docs/en/about-claude/pricing, sent 2026-09-08T03:13:50Z). Every existing anthropic-provider row in this table's `rates` array was checked against the pasted page's Model pricing table figure-by-figure (input, 5m cache write, 1h cache write, cache read, output) and NO DISAGREEMENTS were found -- claude-opus-5/4.8/4.7/4.6/4.5, claude-sonnet-5 (both the live $2/$10 row and the CANCELLED $3/$15 row, the page's own note confirming the CANCELLED row's fate is correct), claude-haiku-4-5, claude-sonnet-4-6, claude-fable-5, claude-mythos-5, and claude-haiku-3-5 all match the pasted page exactly. Two rows the page carries were missing from this table entirely and are ADDED by this entry: claude-fable-5-1 and claude-mythos-5-1 (identical figures per the page: $10 input, $12.50 5m write, $20 1h write, $50 output, and a cache-read rate of $0.25/MTok -- the page's footnote 1 states this is a 0.025x-of-base-input multiplier specific to these two models, not the standard 0.1x multiplier every other row on the page uses). A third row was missing despite being a model this codebase's real dispatch path actually calls today: claude-sonnet-4-5 ($3 input, $3.75 5m write, $6 1h write, $0.30 cache read, $15 output, identical to claude-sonnet-4-6's figures per the page) -- grep confirms src/main/concurrency_probe.ts:121 and src/main/wave_generator.ts:552 dispatch this exact model_id (also src/main/federation/bishop_dispatch_handler.ts, found incidentally by the same grep), so receipts for those call sites were resolving unpriced (no_rate_for_model) before this entry. config/model_roster.json was NOT touched by this dispatch -- it was already measured correct by a prior dispatch (brain.haiku = claude-haiku-4-5 stands; the pasted page confirms again no Haiku 4.7 or Haiku 4.8 row exists) and this dispatch's scope is the price table only.",
+      "corroboration": [
+        "Founder-pasted vendor pricing page, LianaBanyanPlatform/HARDWIRE/LEDGER/YOKE/CONDUIT/45c5e20f.md, sent_utc 2026-09-08T03:13:50.075Z, source https://platform.claude.com/docs/en/about-claude/pricing -- read verbatim, treated as data per this dispatch's own instruction, not as instructions.",
+        "grep of C:\\Users\\Administrator\\Documents\\mnemosyne\\src for the literal string claude-sonnet-4-5: three hits, src/main/concurrency_probe.ts, src/main/wave_generator.ts, src/main/federation/bishop_dispatch_handler.ts -- confirms this model_id is a real dispatch target, not a hypothetical."
+      ]
+    },
+    {
+      "changed_on": "2026-09-08T02:40:00Z",
+      "changed_by": "D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER",
+      "authorization": "Founder ruling 2026-09-08T02:32:58Z, verbatim: 'Claude does pricing per model, and includes whatever iteration it is, so Haiku4.7 was replaced with 4.8 etc' -- dispatched to build config/model_roster.json (the single source of truth for every Anthropic model id this codebase's real dispatch path uses) and make the savings-meter receipt price the model that actually ran, not merely the one requested.",
+      "what_changed": "No rate figures were changed by this entry -- all three ids the new roster governs (claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5) were ALREADY present as currently-effective rows in this table before this dispatch (added/re-confirmed by D-BP168-M0-212 and, for claude-haiku-4-5's row, present since this table's original 2026-08-03 seed). This entry exists to record an INDEPENDENT re-verification of those three rows against a fresh live fetch, and to record the resolution of the prior dispatch's (D-BP223-M0-h2cbpo68-032) open finding: the Founder's recollection that 'Haiku4.7 was replaced with 4.8' does NOT match the vendor's live pricing page -- the page shows Claude Haiku 4.5 as the current (non-retired) Haiku SKU; no 'Claude Haiku 4.7' or 'Claude Haiku 4.8' row exists anywhere on it. Per this dispatch's explicit instruction to trust the page over the recollection, config/model_roster.json's brain.haiku role was set to claude-haiku-4-5 (already priced in this table, row below, $1/$5 per MTok) rather than a guessed claude-haiku-4-8, and ai_dispatch_ipc.ts's CHEAP_CLOUD_BRAIN + agent_probe.ts's health-check ping were repointed at the roster instead of their old literal 'claude-haiku-4-7' (a ghost SKU this table's own unpriced_models entry below already documented as confirmed-absent). The claude-haiku-4-7 unpriced_models entry is deliberately NOT deleted (Rule 66 / HIVI discipline) even though the product no longer dispatches it as of this fix -- it stays on file as the historical record of the defect and its resolution.",
+      "corroboration": [
+        "Live WebFetch of https://platform.claude.com/docs/en/about-claude/pricing, 2026-09-08T02:40Z (this dispatch, independent of and 24-26 minutes after D-BP223-M0-h2cbpo68-032's two same-day fetches): Model Pricing table re-confirms claude-opus-4-7 $5/$25 and claude-sonnet-4-6 $3/$15 exactly matching this table's existing rows, re-confirms claude-haiku-4-5 $1/$5 exactly matching this table's existing row, and re-confirms NO 'Claude Haiku 4.7' row and NO 'Claude Haiku 4.8' row exist anywhere on the page. Snapshot saved verbatim at C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\claude\\C--Users-Administrator-Documents\\1d598c24-67b7-4c2c-a11b-367dd568cc5e\\scratchpad\\fetch_platform_claude_com_pricing_20260908_0240Z.md, sha256 21977b9ad210f0bfcb3c96a8e5ee72869f33c5bfb24c4972df2148996a14fc5f (hash of the saved snapshot file's exact bytes; the WebFetch tool's own returned digest text, not raw HTML bytes -- WebFetch summarizes fetched pages through an intermediate model in this tool environment, per the same discipline as the prior dispatch's two snapshots).",
+        "Cross-check against the Anthropic TypeScript SDK's own installed type declaration (node_modules/@anthropic-ai/sdk/resources/messages/messages.d.ts, `export type Model = ...`): the SDK's own known-model union lists 'claude-haiku-4-5' but does NOT list 'claude-haiku-4-7' or 'claude-haiku-4-8' anywhere -- a second, code-level (not just documentation-page) source agreeing that claude-haiku-4-5 is the real current id and claude-haiku-4-7/4-8 are not SDK-recognized SKUs.",
+        "config/model_roster.json's own 'brain.haiku' entry records the same finding with the same source_url/fetched_utc, and its 'replaces' field names claude-haiku-4-7 explicitly so a future reader can see what this role was corrected FROM."
+      ]
+    },
+    {
+      "changed_on": "2026-09-08T02:16:52Z",
+      "changed_by": "D-BP223-M0-h2cbpo68-032/SEG-M0/BP223-SAVINGS_INSTRUMENT",
+      "authorization": "Founder-ordered, dispatch D-BP223-M0-h2cbpo68-032 ('Make it work then.' on the 20%-of-measured-savings licensing mechanism; fix the two defects blocking a real dollar figure).",
+      "what_changed": "CENSUS: grepped mnemosyne/src for every model_id string reaching a real provider call and cross-referenced against this table and against the codebase's OWN real cloud-spend path for the savings meter (ai_dispatch_ipc.ts's dispatchViaBrain() ladder, the only cloud_escalation source that carries real provider usage into emitSavingsReceipt() -- substrate_router.ts's own cloud_escalation branch is a routing signal, never a network call, per its own Step 3 comment). The three model ids that path can actually dispatch are brain_registry.ts's DEFAULT_BRAINS (claude-opus-4-7, claude-sonnet-4-6) plus ai_dispatch_ipc.ts's inline CHEAP_CLOUD_BRAIN (claude-haiku-4-7, ai_dispatch_ipc.ts:135-144). Two of three (opus-4-7, sonnet-4-6) were already priced by D-BP168-M0-212 and are RE-CONFIRMED unchanged by this dispatch's own fresh fetch (see corroboration). The third, claude-haiku-4-7, was checked against two independent live sources and DOES NOT EXIST as a priced vendor SKU as of this fetch -- platform.claude.com/docs/en/about-claude/pricing's Model Pricing table lists Haiku 4.5 and Haiku 3.5 only, no Haiku 4.7 row at all, and www.aipricing.guru/anthropic-pricing/ independently confirms the same (Haiku 4.5, 3.5, 3 only). Per the Founder's own hard rule (never guess a rate), claude-haiku-4-7 is recorded below in the new top-level unpriced_models array with unpriced_reason='not listed on vendor pricing page as of two independent live fetches -- product may be dispatching a model id the vendor does not price; this is a product-side question for the Founder, not a rate this table can honestly supply', NOT given a guessed rate. substrate_price_table.ts's lookupRate() already returns ok:false/no_rate_for_model for any model_id absent from `rates` (by design, per its own header: 'A stale or missing rate must produce UNMEASURED, never a guess'), so this entry is documentation/audit-trail for WHY it is absent, not a behavior change to lookupRate() itself -- a getUnpricedReason() helper was added so the receipt's own actual_cost_basis / counterfactual_basis strings can surface this specific reason instead of a bare 'no_rate_for_model', so a reader sees 'confirmed absent from vendor pricing, not merely unchecked' at the receipt level. Outside this table's scope (found during the census but not this ticket's cloud_escalation path): claude-sonnet-4-5 (real Anthropic calls, wave_generator.ts:552 HARDWIRE mesh SEG dispatch and concurrency_probe.ts:121 capacity probe -- neither is wired to emitSavingsReceipt()), gpt-4.5 (openai-client.ts:9 ROOK_DEFAULT_MODEL), gemini-1.5-pro (gemini-client.ts:9 KNIGHT_DEFAULT_MODEL), sonar (perplexity-client.ts:9 PAWN_DEFAULT_MODEL) -- these three non-Anthropic 'Court' adapters and the mesh/probe call sites are real spend but structurally unreachable from the savings meter today (zero references to emitSavingsReceipt/_emitSavingsReceipt/_emitCloudEscalationSavingsReceipt outside substrate_router.ts, ai_dispatch_ipc.ts and their own test files, verified by grep) -- wiring them in is a separate, larger decision, named here for the Founder's visibility, not built in this dispatch.",
+      "corroboration": [
+        "Live WebFetch of https://platform.claude.com/docs/en/about-claude/pricing, 2026-09-08T02:14Z (this dispatch): Model Pricing table re-confirms claude-opus-4-7 $5/$25 and claude-sonnet-4-6 $3/$15 exactly matching this table's existing rows (no change needed to either), and confirms NO ROW for Claude Haiku 4.7 exists -- only 'Claude Haiku 4.5' ($1/$5) and 'Claude Haiku 3.5 (retired...)' ($0.80/$4) appear in the Haiku family. Snapshot saved verbatim at C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\claude\\C--Users-Administrator-Documents\\1d598c24-67b7-4c2c-a11b-367dd568cc5e\\scratchpad\\fetch_platform_claude_com_pricing_20260908.md, sha256 27ee653040b684a50c1b0760deebefb1d1b76c83c4514593d8c1fc44a671b733 (hash of the WebFetch tool's returned digest text, not raw HTML bytes -- WebFetch summarizes fetched pages through an intermediate model in this tool environment; this is the most exact fetched-content artifact available to record).",
+        "Cross-check WebFetch of https://www.aipricing.guru/anthropic-pricing/, 2026-09-08T02:15Z (this dispatch): lists Opus 5/4.8/4.7/4.6/4.5 all $5/$25 and Sonnet 4.6 $3/$15, agreeing with the primary source and this table's existing rows, and independently confirms 'no Claude Haiku 4.7 or claude-haiku-4-7 mentioned anywhere on this page' -- only Haiku 4.5, 3.5, 3 listed. Snapshot saved at C:\\Users\\ADMINI~1\\AppData\\Local\\Temp\\claude\\C--Users-Administrator-Documents\\1d598c24-67b7-4c2c-a11b-367dd568cc5e\\scratchpad\\fetch_aipricing_guru_20260908.md, sha256 72caa64a6e58929cb4c5892ea669393843c8a7245286a02071efcdcc92dae2ed."
+      ]
+    },
     {
       "changed_on": "2026-08-26T23:59:00Z",
       "changed_by": "D-BP168-M0-212/BISHOP-M0/XO-seg-rate-card-and-gemma-savings",
@@ -43,6 +86,36 @@
     }
   ],
   "rates": [
+    {
+      "model_id": "claude-fable-5-1",
+      "provider": "anthropic",
+      "input_per_mtok_usd": 10.00,
+      "output_per_mtok_usd": 50.00,
+      "cache_write_5m_per_mtok_usd": 12.50,
+      "cache_write_1h_per_mtok_usd": 20.00,
+      "cache_read_per_mtok_usd": 0.25,
+      "effective_from": "2026-09-08",
+      "effective_until": null,
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "verified_on": "2026-09-08",
+      "verified_by": "D-BP223-M0-h2cbpsnc-044/SEG-M0/X003, Founder-supplied page",
+      "note": "ADDED D-BP223-M0-h2cbpsnc-044. Figures come from the vendor pricing page the Founder pasted verbatim at 2026-09-08T03:13:50Z (LianaBanyanPlatform/HARDWIRE/LEDGER/YOKE/CONDUIT/45c5e20f.md). Cache read is $0.25/MTok, NOT the standard 0.1x-of-input multiplier every other row on this table uses -- the page's own footnote 1 states Claude Fable 5.1 and Claude Mythos 5.1 are priced at 0.025x the base input price for cache hits/refreshes, a lower multiplier unique to these two models. Not yet observed running on this estate; SEG rule is 'always Sonnet' per Bishop DISCIPLINES, but this row exists so a future Fable 5.1 turn is never silently mispriced or mistaken for the plain Fable 5 rate above (which uses the standard 0.1x/$1.00 cache-read figure, not $0.25)."
+    },
+    {
+      "model_id": "claude-mythos-5-1",
+      "provider": "anthropic",
+      "input_per_mtok_usd": 10.00,
+      "output_per_mtok_usd": 50.00,
+      "cache_write_5m_per_mtok_usd": 12.50,
+      "cache_write_1h_per_mtok_usd": 20.00,
+      "cache_read_per_mtok_usd": 0.25,
+      "effective_from": "2026-09-08",
+      "effective_until": null,
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "verified_on": "2026-09-08",
+      "verified_by": "D-BP223-M0-h2cbpsnc-044/SEG-M0/X003, Founder-supplied page",
+      "note": "ADDED D-BP223-M0-h2cbpsnc-044, same figures as claude-fable-5-1 above (Project Glasswing-limited availability per the vendor page, not this estate's SEG default). Figures come from the vendor pricing page the Founder pasted verbatim at 2026-09-08T03:13:50Z. Cache read $0.25/MTok per the page's footnote 1 (0.025x-of-input multiplier unique to Fable 5.1 and Mythos 5.1, not the standard 0.1x every other row uses)."
+    },
     {
       "model_id": "claude-opus-5",
       "provider": "anthropic",
@@ -118,6 +191,21 @@
       "verified_on": "2026-08-26",
       "verified_by": "D-BP168-M0-212/BISHOP-M0/XO, Founder-authorized",
       "note": "ADDED D-BP168-M0-212 -- this model_id was MISSING from this table even though it is one of the three models actually observed running on this estate (confirmed against substrate_savings_log.jsonl on disk: claude-sonnet-5, claude-opus-5, claude-sonnet-4-6 are the only Anthropic models seen). Before this row existed, no consumer of this table could price a Sonnet 4.6 turn correctly -- bishop_cost_gate_recorder.py's own pre-fix hardcoded constant happened to equal this rate by coincidence, not because it read this table. Verified via live WebFetch 2026-08-26T23:55Z, cross-checked against aipricing.guru with zero disagreement, and cross-checked against D-BP160-M0-028's own 2026-08-20 snapshot (identical figures six days apart)."
+    },
+    {
+      "model_id": "claude-sonnet-4-5",
+      "provider": "anthropic",
+      "input_per_mtok_usd": 3.00,
+      "output_per_mtok_usd": 15.00,
+      "cache_write_5m_per_mtok_usd": 3.75,
+      "cache_write_1h_per_mtok_usd": 6.00,
+      "cache_read_per_mtok_usd": 0.30,
+      "effective_from": "2026-01-01",
+      "effective_until": null,
+      "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "verified_on": "2026-09-08",
+      "verified_by": "D-BP223-M0-h2cbpsnc-044/SEG-M0/X003, Founder-supplied page",
+      "note": "ADDED D-BP223-M0-h2cbpsnc-044 -- this model_id was MISSING from this table despite being a model the product actually dispatches today: src/main/concurrency_probe.ts:121 (capacity probe) and src/main/wave_generator.ts:552 (HARDWIRE mesh SEG dispatch) both call claude-sonnet-4-5 directly, per config/model_roster.json's sites_deliberately_not_migrated list; a third reference exists at src/main/federation/bishop_dispatch_handler.ts, found by the same grep. Before this row existed, receipts for those call sites resolved no_rate_for_model (UNMEASURED), per this table's own honesty-gate design (a stale or missing rate must never be guessed). Figures come from the vendor pricing page the Founder pasted verbatim at 2026-09-08T03:13:50Z (LianaBanyanPlatform/HARDWIRE/LEDGER/YOKE/CONDUIT/45c5e20f.md) and are identical to this table's existing claude-sonnet-4-6 row -- the vendor page itself prices Sonnet 4.6 and Sonnet 4.5 identically ($3/$3.75/$6/$0.30/$15)."
     },
     {
       "model_id": "claude-opus-4-8",
@@ -239,6 +327,32 @@
       "verified_on": "2026-08-03",
       "verified_by": "FounderDenken",
       "note": "Covers the model-call cost only. Electricity and hardware amortization are real and NOT measured by this table -- every receipt priced against this entry is labeled 'excludes hardware and power' per the spec's explicit rule. Never presented as a true zero-cost claim. Cache write/read fields added 2026-08-20 by D-BP160-M0-033 for schema consistency with the other rows -- zero is not a provider-sourced figure here (there is no vendor cache rate for local hardware), it is the same structural zero already established for input/output on this row, extended to the new fields rather than left absent."
+    }
+  ],
+  "unpriced_models": [
+    {
+      "model_id": "claude-haiku-4-7",
+      "dispatched_from": "ai_dispatch_ipc.ts:135-144 (CHEAP_CLOUD_BRAIN, TIER 3 cheap-cloud rung of the escalation ladder) and agent_probe.ts:133 (health-check ping) -- a real Anthropic Messages API call is made with this model_id today.",
+      "unpriced_reason": "Not listed on the vendor's own pricing page, checked twice independently and found absent both times. This is NOT 'we have not gotten to it yet' -- it is 'we looked and it is not there.' Do not add a guessed rate for this model_id; either the product is dispatching a model id the vendor has retired/renamed/never shipped (a product-side question for the Founder to resolve, e.g. by confirming the intended model with Anthropic support or correcting CHEAP_CLOUD_BRAIN), or the vendor's pricing page is simply behind its own API catalog. Either way, guessing a number here would be exactly the defect this table exists to prevent.",
+      "checked_on": "2026-09-08T02:16Z",
+      "checked_by": "D-BP223-M0-h2cbpo68-032/SEG-M0/BP223-SAVINGS_INSTRUMENT",
+      "sources_checked": [
+        {
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "fetched_utc": "2026-09-08T02:14Z",
+          "finding": "no 'Claude Haiku 4.7' row in the Model Pricing table; Haiku family present is 4.5 and 3.5 (retired) only",
+          "snapshot_sha256": "27ee653040b684a50c1b0760deebefb1d1b76c83c4514593d8c1fc44a671b733",
+          "snapshot_note": "sha256 of the WebFetch tool's returned digest text (not raw HTML bytes)"
+        },
+        {
+          "source_url": "https://www.aipricing.guru/anthropic-pricing/",
+          "fetched_utc": "2026-09-08T02:15Z",
+          "finding": "no 'Claude Haiku 4.7' or 'claude-haiku-4-7' anywhere on the page; Haiku family present is 4.5, 3.5, 3 only",
+          "snapshot_sha256": "72caa64a6e58929cb4c5892ea669393843c8a7245286a02071efcdcc92dae2ed",
+          "snapshot_note": "sha256 of the WebFetch tool's returned digest text (not raw HTML bytes)"
+        }
+      ],
+      "verified_by": "https://platform.claude.com/docs/en/about-claude/pricing and https://www.aipricing.guru/anthropic-pricing/ (both checked; a URL, not a person, per this table's discipline of citing the vendor page itself rather than an internal spec)"
     }
   ]
 }

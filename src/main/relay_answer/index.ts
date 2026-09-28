@@ -8,6 +8,7 @@ import { fork, type ChildProcess } from 'child_process';
 import { join } from 'path';
 import { homedir } from 'os';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync } from 'fs';
+import { isNetworkFeatureOn } from '../startup/network_feature_settings';
 
 const MNEMOSYNE_HOME = join(homedir(), '.mnemosyne');
 const CRASH_LOG_FILE = join(MNEMOSYNE_HOME, 'poller_crash_log.json');
@@ -35,6 +36,8 @@ export let lastRouteId: string | null = null;
 export let totalRestartCount = 0;
 export let ollamaCurrentlyDown = false;
 export let consecutiveCrashCount = 0;
+/** D-BP223-BM0-X029-018: last "You come first" pause explanation the worker reported, or null. */
+export let relayPollerYieldingExplanation: string | null = null;
 
 // Module 5: track last heartbeat timestamp for split-brain detector
 export let lastHeartbeatEmittedAt: number = Date.now();
@@ -199,6 +202,7 @@ function spawnWorker(config: RelayAnswerPollerConfig): void {
       case 'route_processed':
         lastRouteProcessedAt = msg.processedAt as string;
         lastRouteId = msg.routeId as string;
+        relayPollerYieldingExplanation = null; // D-BP223-BM0-X029-018: answering again = not yielding
         break;
       case 'ollama_down':
         ollamaCurrentlyDown = true;
@@ -208,6 +212,23 @@ function spawnWorker(config: RelayAnswerPollerConfig): void {
         break;
       case 'tick_error':
         relayPollerLastError = msg.message as string;
+        break;
+      // D-BP223-BM0-X029-018 "You come first": the forked worker has no powerMonitor; answer here.
+      case 'precedence_query': {
+        const id = msg.id as number;
+        const model = typeof msg.model === 'string' ? msg.model : null;
+        import('../user_precedence')
+          .then(({ checkUserPrecedence }) => checkUserPrecedence({ model, ollamaUrl: config.ollamaUrl }))
+          .then((d) => {
+            try { child.send({ type: 'precedence_reply', id, decision: { yield: d.yield, desktopInUse: d.desktopInUse, explanation: d.explanation } }); } catch { /* child gone */ }
+          })
+          .catch((e: unknown) => {
+            try { child.send({ type: 'precedence_reply', id, decision: { yield: false, desktopInUse: true, explanation: `precedence check error: ${(e as Error).message}` } }); } catch { /* child gone */ }
+          });
+        break;
+      }
+      case 'yielding':
+        relayPollerYieldingExplanation = msg.explanation as string;
         break;
     }
   });
@@ -290,7 +311,13 @@ function startLivenessWatchdog(): void {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-export function startRelayAnswerPoller(config: RelayAnswerPollerConfig): () => void {
+export function startRelayAnswerPoller(config: RelayAnswerPollerConfig, opts: { settingsPath?: string } = {}): () => void {
+  // D-BP223-BM0-X031-024 (Founder, 2026-09-17T11:20Z): OFF until the user turns on
+  // "Answer other members' questions with my local AI" (startup/network_feature_settings.ts). No fork, no poll, no watchdog.
+  if (!isNetworkFeatureOn('answerOtherMembersQuestions', opts.settingsPath)) {
+    log('NOT started: answerOtherMembersQuestions is off (default). The user turns it on in network_feature_settings.json.');
+    return () => {};
+  }
   _config = config;
   spawnWorker(config);
   startLivenessWatchdog();

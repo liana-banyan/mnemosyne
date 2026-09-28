@@ -42,7 +42,7 @@ const SIX_PILLARS = [
   },
   {
     label: 'Free',
-    detail: 'SSPL Free Forever, Pledge #2260. No ads. No strings. No subscription. Patent-pending, 21 provisional filings, pledged to the member commons, never sold for extraction. ✔',
+    detail: 'Free for cooperative-class use under the Mnemosyne Cooperative Source License 2.0, Pledge #2260. No ads. No strings. No subscription. Patent-pending, 23 provisional filings, pledged to the member commons, never sold for extraction. ✔',
   },
   {
     label: 'Yours',

@@ -95,6 +95,7 @@ import { getStablePeerId } from './peer-discovery';
 import { handleInboundBishopDispatchEnvelope } from './peer_server';
 import type { BishopDispatchResult } from './peer_server';
 import { writeBishopDispatchReply } from './bishop_dispatch_reply';
+import { isNetworkFeatureOn } from '../startup/network_feature_settings';
 
 /** The one literal this listener claims. Matches `BishopDispatchPayload.kind` (mic_dispatcher.ts)
  *  -- not re-imported as a type-level union because the check here is against untyped JSON
@@ -494,7 +495,13 @@ export function startBishopDispatchRelayListener(
  *  peerId/supabaseUrl/anonKey the SAME way those callers already do (getStablePeerId(),
  *  getSupabaseUrl(), getAnonKey()) so this listener authenticates identically to every other
  *  poller in this codebase, no new credential path introduced. */
-export function startBishopDispatchRelayListenerWithDefaults(): BishopRelayListenerHandle {
+export function startBishopDispatchRelayListenerWithDefaults(opts: { settingsPath?: string } = {}): BishopRelayListenerHandle {
+  // D-BP223-BM0-X031-027 (Founder, 2026-09-17: "Turn those OFF by default first"): no relay_routes poll and no
+  // peer_presence heartbeat PATCH unless the user turned on bishopDispatchListener. Takes effect at next app start.
+  if (!isNetworkFeatureOn('bishopDispatchListener', opts.settingsPath)) {
+    console.log('[X031-027] bishop_dispatch relay listener NOT started: bishopDispatchListener is off (default)');
+    return { stop(): void { /* never started */ } };
+  }
   return startBishopDispatchRelayListener({
     peerId: getStablePeerId(),
     supabaseUrl: getSupabaseUrl(),

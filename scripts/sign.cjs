@@ -51,28 +51,26 @@
 // that situation would be worse than a loud failure.
 
 const { spawnSync } = require('child_process');
+const path = require('path');
+const { assertUpdaterSigning, loadWinConfig } = require('./updater_signing_check.cjs');
 
 module.exports = async function signWindows(configuration) {
   const filePath = configuration && configuration.path;
+
+  // D-BP223-BM0-X030-073 P3 (XO X030 pick on Founder k/0a8d1c96): FAIL THE BUILD, never warn-and-ship-unsigned.
+  // The old fail-soft branch here ("Building unsigned (local/dev build)") is removed. Every signing pass now requires
+  // the three TRUSTED_SIGNING_* variables AND the updater signature check ON (win.verifyUpdateCodeSignature true plus
+  // win.publisherName). configuration.options is the win config electron-builder is actually using (package.json build
+  // or a --config file such as the lean build's); package.json is the fallback.
+  const winConfig = (configuration && configuration.options) || loadWinConfig(path.join(__dirname, '..'));
+  assertUpdaterSigning(winConfig, process.env);
 
   const endpoint = process.env.TRUSTED_SIGNING_ENDPOINT;
   const account = process.env.TRUSTED_SIGNING_ACCOUNT;
   const profile = process.env.TRUSTED_SIGNING_PROFILE;
 
-  // Fail-soft: local/dev builds without Trusted Signing configured must still
-  // succeed, just unsigned. This is deliberate -- do NOT throw here.
-  if (!endpoint || !account || !profile) {
-    console.warn(
-      '[Sign] Skipping Azure Trusted Signing -- one or more of ' +
-      'TRUSTED_SIGNING_ENDPOINT / TRUSTED_SIGNING_ACCOUNT / TRUSTED_SIGNING_PROFILE ' +
-      'is not set. Building unsigned (local/dev build).'
-    );
-    return;
-  }
-
   if (!filePath) {
-    console.warn('[Sign] No file path provided by electron-builder configuration -- skipping.');
-    return;
+    throw new Error('[Sign] BUILD REFUSED (X030-073 P3): electron-builder gave no file path to sign; a skipped file would ship unsigned.');
   }
 
   // `sign` is the Microsoft.Trusted.Signing.Client / .NET global tool

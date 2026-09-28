@@ -210,7 +210,7 @@ export function issueGatedOrder(params: {
   };
 
   const signature = signFrame(canonicalGatedOrder(unsigned), params.privateKeyHex)
-    .slice(0, SIG_HEX_LEN);
+    .slice(-SIG_HEX_LEN);
   return { ...unsigned, signature };
 }
 
@@ -255,7 +255,7 @@ export function verifyGatedOrder(
 
   // Signature BEFORE expiry, so a tampered expiry cannot decide its own validity.
   const ok = order.signature.length === SIG_HEX_LEN &&
-             verifyFrame(order.signature + canonicalGatedOrder(order), publicKeyHex).valid;
+             verifyFrame(canonicalGatedOrder(order) + order.signature, publicKeyHex).valid;
   if (!ok) return fail('signature did not verify: order altered, or signed by another key', hasCommitment);
 
   if (new Date(order.expiresAt).getTime() / 1000 < nowUnixSeconds) {

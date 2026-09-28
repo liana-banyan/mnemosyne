@@ -1,12 +1,15 @@
 // anthropic-client.ts — BP060 Application 002 Steps 3+4 · Court: Bishop
 // Uses raw fetch to https://api.anthropic.com/v1/messages — no SDK dependency required.
-// Court mapping: Bishop = claude-opus-4-7 (1M context) per Founder verbatim BP059.
+// Court mapping: Bishop = the roster's brain.opus role (1M context) per Founder verbatim BP059.
 // decay_class: BETWEEN
+// D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: BISHOP_DEFAULT_MODEL now reads
+// config/model_roster.json's 'brain.opus' role instead of carrying its own literal.
 
 import type { ProviderClient, ProviderQueryArgs, ProviderResponse } from './types';
+import { getRosterModelId } from '../model_roster';
 
 const ANTHROPIC_BASE = 'https://api.anthropic.com/v1';
-const BISHOP_DEFAULT_MODEL = 'claude-opus-4-7'; // Founder verbatim · 1M context
+const BISHOP_DEFAULT_MODEL = getRosterModelId('brain.opus'); // Founder verbatim · 1M context
 
 export class AnthropicClient implements ProviderClient {
   readonly provider_id = 'anthropic';

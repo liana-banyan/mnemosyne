@@ -1,3 +1,4 @@
+# NOTE (D-BP223-BM04-X033S3-013, 2026-09-20): this script's output is no longer consumed -- NotCentsGlyph.tsx renders an inline SVG instead.
 # NotCents single-glyph font generator (BP041 SAGA 3).
 # Creates cai-notcents.woff2 + cai-notcents.ttf at PUA codepoint U+E000.
 #

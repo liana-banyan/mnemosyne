@@ -13,6 +13,7 @@ import { getEnvLoaderStatus } from '../env_loader';
 import { getStablePeerId } from '../federation/peer-discovery';
 import { OllamaManager } from '../ollama_manager';
 import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
+import { isNetworkFeatureOn } from '../startup/network_feature_settings';
 
 // Singleton OllamaManager for diagnostics -- best-effort, never throws
 const _diagOllama = new OllamaManager();
@@ -76,7 +77,10 @@ function toEdgeFunctionKeySource(source: 'vault' | 'pre-existing-env' | 'unresol
   return 'fallback';
 }
 
-export async function submitStartupDiagnostic(): Promise<void> {
+export async function submitStartupDiagnostic(opts: { settingsPath?: string } = {}): Promise<void> {
+  // D-BP223-BM0-X031-024 (Founder, 2026-09-17T11:20Z): OFF until the user turns on
+  // "Send a status report to Liana Banyan" (startup/network_feature_settings.ts). Nothing is collected or sent.
+  if (!isNetworkFeatureOn('sendStatusReport', opts.settingsPath)) return;
   try {
     const envStatus = getEnvLoaderStatus();
     const supabaseUrl = envStatus.supabaseUrl || getSupabaseUrl();

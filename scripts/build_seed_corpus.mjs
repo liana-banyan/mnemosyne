@@ -132,7 +132,7 @@ function main() {
       provenance_prefix: 'starter_chocolate',
       third_party_content: false,
       author: 'Liana Banyan Corporation',
-      license: 'SSPL-1.0',
+      license: 'LicenseRef-MCSL-2.0',
       generated_by: 'scripts/build_seed_corpus.mjs',
       generated_at: new Date().toISOString().slice(0, 10),
     });
@@ -148,7 +148,7 @@ function main() {
       category: 'onboarding',
       origin: 'Hand-authored by Liana Banyan Corporation - generic onboarding document',
       author: 'Liana Banyan Corporation',
-      license: 'SSPL-1.0',
+      license: 'LicenseRef-MCSL-2.0',
       third_party_content: false,
     },
     {
@@ -156,7 +156,7 @@ function main() {
       category: 'onboarding',
       origin: 'Hand-authored by Liana Banyan Corporation - generic onboarding document',
       author: 'Liana Banyan Corporation',
-      license: 'SSPL-1.0',
+      license: 'LicenseRef-MCSL-2.0',
       third_party_content: false,
     },
     {
@@ -164,7 +164,7 @@ function main() {
       category: 'onboarding',
       origin: 'Hand-authored by Liana Banyan Corporation - generic onboarding document',
       author: 'Liana Banyan Corporation',
-      license: 'SSPL-1.0',
+      license: 'LicenseRef-MCSL-2.0',
       third_party_content: false,
     },
   ];

@@ -114,7 +114,36 @@ import { OPENAI_COMPAT_SERVER_HOST, OPENAI_COMPAT_SERVER_PORT } from './openai_c
 // cloud, TIER 4 flagship, and the explicit-flagship-brain-pick branch, all via dispatchViaBrain()
 // below), and was never wired to the meter at all before this ticket. See
 // _emitCloudEscalationSavingsReceipt() and its three call sites (search this file for that name).
-import { emitSavingsReceipt } from './substrate_savings_receipt';
+import { emitSavingsReceipt, verifySavingsChain, computePeriodAggregate, anchorDigest, getFirstRecordTimestamp } from './substrate_savings_receipt';
+// D-BP223-BM09-ARCHBISHOP-004-016 ("My Savings Receipt", REDO of 004-010): the launch incentive
+// ("DOWNLOAD IT and PROVE IT and POST IT") reads the SAME hash-chained log above through a new
+// 'savings-receipt:summary' IPC channel (search this file for that name) -- signWithLocalPeerKey
+// is the only Electron-aware (safeStorage) piece; the block/milestone math is pure and lives in
+// the two modules below so it is unit-testable without mocking Electron.
+import { ensureLocalPeerKeypair, signWithLocalPeerKey } from './identity/localPeerKeypair';
+import { receiptBlockSigningText, renderReceiptBlock, type ReceiptBlockFields } from './savings_receipt_block';
+import { SAVINGS_WINDOWS, windowRange, type SavingsReceiptWindow, type SavingsReceiptTrailingWindow } from './savings_receipt_milestones';
+import { buildSavingsReceiptSummary } from './savings_receipt_summary';
+// D-BP223-BM0-X033-022 (Scavenger Hunt, "Haystack Needle" test #2): zero-model-call substrate
+// phrase search + "did you mean" answer-with-sources. See scavenger_hunt.ts's own header for why
+// this writes a SIBLING hash-chained log rather than the savings-receipt one imported above.
+import {
+  loadCandidatePool,
+  findScavengerHuntMatches,
+  buildScavengerHuntAnswer,
+  measureSearchTokens,
+  measureAnswerTokens,
+  emitScavengerHuntRun,
+  computePopularPhrases,
+} from './scavenger_hunt';
+// D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: CHEAP_CLOUD_BRAIN's model_id and
+// the TIER 4 flagship fallback lookup below (search 'brain.sonnet') now read
+// config/model_roster.json through this loader instead of carrying their own literal strings --
+// see model_roster.ts's header for why. This directly fixes the ghost-SKU defect
+// D-BP223-M0-h2cbpo68-032 found and could not resolve (claude-haiku-4-7 dispatched a model id
+// absent from the vendor's own pricing page): the roster's brain.haiku role now points at
+// claude-haiku-4-5, the vendor page's actual current Haiku SKU.
+import { getRosterModelId } from './model_roster';
 
 const OLLAMA_API_BASE = 'http://127.0.0.1:11434';
 // KN-BP146-M6: THE NEXUS's own address. Used ONLY at the 'ai-dispatch:query-engine' handler's
@@ -124,18 +153,23 @@ const OLLAMA_API_BASE = 'http://127.0.0.1:11434';
 // ticket's scope per KN-BP146-M6.
 const NEXUS_LOCAL_URL = `http://${OPENAI_COMPAT_SERVER_HOST}:${OPENAI_COMPAT_SERVER_PORT}`;
 
-// BP145-M4 Slice 2 (the escalation ladder, TIER 3 cheap cloud): a real, working Anthropic
-// model id already used elsewhere in this codebase for a real API call (agent_probe.ts's own
-// ping/health-check, model: 'claude-haiku-4-7') -- reused verbatim, not invented for this
-// ticket. Declared inline here rather than added to brain_registry.ts's DEFAULT_BRAINS,
-// because brain_registry.ts is not among this ticket's owned files. Dispatched through the
-// SAME dispatchViaBrain() the existing flagship branch already uses -- kind:'flagship' is
-// correct here (dispatchViaBrain's 'flagship' branch is a generic Anthropic Messages API
-// caller, not literally restricted to the Opus/Sonnet capability tier).
+// BP145-M4 Slice 2 (the escalation ladder, TIER 3 cheap cloud): dispatched through the SAME
+// dispatchViaBrain() the existing flagship branch already uses -- kind:'flagship' is correct here
+// (dispatchViaBrain's 'flagship' branch is a generic Anthropic Messages API caller, not literally
+// restricted to the Opus/Sonnet capability tier). Declared inline here rather than added to
+// brain_registry.ts's DEFAULT_BRAINS, same as before this ticket.
+//
+// D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: model_id/brain_id now come from
+// config/model_roster.json's 'brain.haiku' role instead of a literal 'claude-haiku-4-7' constant.
+// That literal was the actual product defect D-BP223-M0-h2cbpo68-032 found and could not fix
+// (the string does not appear on the vendor's own pricing page, confirmed by two independent
+// fetches that dispatch plus a third independent re-fetch this dispatch) -- the roster's
+// brain.haiku role now resolves to claude-haiku-4-5, the vendor page's actual current
+// (non-retired) Haiku SKU, which IS already a priced row in substrate_price_table.json.
 const CHEAP_CLOUD_BRAIN: BrainEntry = {
-  brain_id: 'claude-haiku-4-7',
+  brain_id: getRosterModelId('brain.haiku'),
   vendor: 'anthropic',
-  model_id: 'claude-haiku-4-7',
+  model_id: getRosterModelId('brain.haiku'),
   kind: 'flagship',
   api_endpoint: 'https://api.anthropic.com',
   cost_per_1k_tokens: 0.001,
@@ -152,6 +186,15 @@ export interface SEGResultEnvelope {
   content: string;
   input_tokens: number | null;  // null for local Ollama
   output_tokens: number | null; // null for local Ollama
+  /** D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: the exact model_id string the
+   *  Anthropic Messages API's own response echoed back in its top-level `model` field, when the
+   *  call reached the network and the response carried one. null for local Ollama (that path
+   *  does not read the model field back), for a call that never reached the network (e.g. no API
+   *  key configured), or for an errored HTTP response. Carried straight through to
+   *  emitSavingsReceipt() via SavingsReceiptInput.model_id_from_provider so the savings meter
+   *  prices what the vendor says actually ran, not just what was requested (model_id above).
+   *  Never estimated, never defaulted to model_id -- see _emitCloudEscalationSavingsReceipt. */
+  model_id_from_provider: string | null;
   latency_ms: number;
   error: string | null;
 }
@@ -171,6 +214,7 @@ async function dispatchViaBrain(
     content: '',
     input_tokens: null,
     output_tokens: null,
+    model_id_from_provider: null,
     latency_ms: 0,
     error: null,
   };
@@ -226,11 +270,18 @@ async function dispatchViaBrain(
           const data = await res.json() as {
             content?: Array<{ type: string; text?: string }>;
             usage?: { input_tokens?: number; output_tokens?: number };
+            model?: string;
           };
           const textBlock = (data.content ?? []).find((b) => b.type === 'text');
           envelope.content = textBlock?.text ?? '';
           envelope.input_tokens = data.usage?.input_tokens ?? null;
           envelope.output_tokens = data.usage?.output_tokens ?? null;
+          // D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: the Anthropic Messages
+          // API echoes the model that actually served the request in this top-level field. Carry
+          // it through verbatim (never defaulted to brain.model_id) so
+          // _emitCloudEscalationSavingsReceipt below can price what the vendor confirms actually
+          // ran, not merely what was requested.
+          envelope.model_id_from_provider = data.model ?? null;
         }
       }
     }
@@ -267,6 +318,11 @@ export function _emitCloudEscalationSavingsReceipt(
       tier: 'cloud_escalation',
       routing_raw: routingRaw,
       model_used: result.model_id,
+      // D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: the Anthropic Messages API's
+      // own response `model` field, carried straight through from dispatchViaBrain() above.
+      // emitSavingsReceipt() prices against THIS id when present, falling back to model_used
+      // (the requested id) only when it is null -- "price what actually ran."
+      model_id_from_provider: result.model_id_from_provider,
       input_tokens: result.input_tokens,
       output_tokens: result.output_tokens,
       served_text_chars: result.content ? result.content.length : null,
@@ -355,6 +411,16 @@ interface AiDispatchSettings {
   /** BP140-K3 Homework: seconds of Electron powerMonitor.getSystemIdleTime() required before a
    *  homework job is allowed to start. DEFAULTS to 300 (5 minutes) when unset. */
   homework_idle_threshold_seconds?: number;
+  /** D-BP223-BM0-X029-018 (Founder k/0ee57a97): "You come first". DEFAULTS ON (undefined === on).
+   *  When on, background model work (mesh serving, relay answering, peer plow work, remote warmups,
+   *  Homework) yields while the person is using the computer, a full-screen app is in front, or
+   *  VRAM is short for the model; it resumes on its own when idle. Explicit false = full speed.
+   *  Never opens or focuses a window and never touches the user's browser, on or off. Read by
+   *  src/main/user_precedence/index.ts straight from this same settings file. */
+  you_come_first?: boolean;
+  /** D-BP223-BM0-X029-018: keyboard/mouse input within this many seconds counts as "in use".
+   *  DEFAULTS to 120 when unset. */
+  you_come_first_active_seconds?: number;
   /** BP145-M4 Slice 2: gates the escalation-ladder dispatch path in ai-dispatch:query (TIER 1
    *  local-model honest-abstention check -> TIER 2 deterministic solver, honestly skipped, no
    *  free-text-reachable form exists -> TIER 3 cheap cloud -> TIER 4 flagship). DEFAULTS ON as
@@ -785,6 +851,9 @@ export function registerAiDispatchIPC(): void {
       // BP140-K3 Homework: additive, mirrors the csia_research line above.
       if (incoming.homework_enabled !== undefined) updated.homework_enabled = incoming.homework_enabled;
       if (incoming.homework_idle_threshold_seconds !== undefined) updated.homework_idle_threshold_seconds = incoming.homework_idle_threshold_seconds;
+      // D-BP223-BM0-X029-018 "You come first": additive, mirrors the homework lines above.
+      if (incoming.you_come_first !== undefined) updated.you_come_first = incoming.you_come_first;
+      if (incoming.you_come_first_active_seconds !== undefined) updated.you_come_first_active_seconds = incoming.you_come_first_active_seconds;
       // BP145-M4 Slice 2: additive, mirrors the homework_idle_threshold_seconds line above.
       if (incoming.escalation_ladder_mode !== undefined) updated.escalation_ladder_mode = incoming.escalation_ladder_mode;
       // D-BP148-045/BISHOP: additive, mirrors the escalation_ladder_mode line above.
@@ -1037,7 +1106,13 @@ export function registerAiDispatchIPC(): void {
               cost_usd: 0,
               latency_ms,
               provenance: topVerifiedHit.provenance,
-              verified: topVerifiedHit.verified,
+              // D-BP223-BM0-X030-073 STALE CUTOFF C: an aged entry (queryVerifiedEblets set reuse_state
+              // 'prior_record_reverify') is served ONLY as "Prior record, re-verify", never as verified.
+              // Corrected entries never reach here: queryVerifiedEblets withholds them as the old answer.
+              verified: topVerifiedHit.reuse_state === 'prior_record_reverify' ? false : topVerifiedHit.verified,
+              resultState: topVerifiedHit.reuse_state === 'prior_record_reverify' ? 'prior_record_reverify' : 'verified_reusable_answer',
+              resultLabel: topVerifiedHit.reuse_label ?? 'Verified reusable answer',
+              freshness: topVerifiedHit.freshness,
             });
           }
           clearAppBusy();
@@ -1534,10 +1609,15 @@ export function registerAiDispatchIPC(): void {
             // TIER 4: flagship. Last resort -- only reached because TIER 1 honestly abstained
             // AND TIER 3 structurally failed to produce content. Prefers the user's own active
             // flagship brain if one is selected; otherwise falls back to the registry default
-            // flagship (claude-sonnet-4-6) rather than inventing a new brain entry.
+            // flagship rather than inventing a new brain entry.
+            // D-BP223-M0-h2cbpo68-MODEL_ROSTER: brain_id compared here now comes from the roster's
+            // 'brain.sonnet' role (same role brain_registry.ts's DEFAULT_BRAINS sonnet entry now
+            // reads) instead of a duplicated 'claude-sonnet-4-6' literal -- the two had to move
+            // together or this .find() would silently stop matching the moment only one of them
+            // was migrated.
             const flagshipBrain: BrainEntry =
               (activeBrain && activeBrain.kind === 'flagship' ? activeBrain : undefined) ??
-              DEFAULT_BRAINS.find((b) => b.brain_id === 'claude-sonnet-4-6')!;
+              DEFAULT_BRAINS.find((b) => b.brain_id === getRosterModelId('brain.sonnet'))!;
             const tier4Result = await dispatchViaBrain(flagshipBrain, chatMessages);
             // D-BP155-029/BISHOP/seg-meter-net-and-auditlist: real cloud call, real usage tokens
             // (when the call succeeded) -- feed the savings meter unconditionally.
@@ -2295,6 +2375,202 @@ export function registerAiDispatchIPC(): void {
         latency_ms: result.latency_ms,
         error: result.error ?? undefined,
       };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  });
+
+  // ── My Savings Receipt (D-BP223-BM09-ARCHBISHOP-004-016, REDO of 004-010) ────────────────
+  // Founder-ordered launch incentive: "DOWNLOAD IT and PROVE IT and POST IT" -- a MEASURED,
+  // signed, hash-chain-verified receipt, distinct from the answer-cache-meter-summary ESTIMATE
+  // above (that one has no hash and no export). Reads substrate_savings_receipt.ts's existing
+  // tamper-evident log and this install's existing Ed25519 keypair
+  // (identity/localPeerKeypair.ts) -- neither is modified by this handler, both already existed.
+  // Never returns question text, a file path, a hostname, or a username: verifySavingsChain()'s
+  // ChainVerifyResult and computePeriodAggregate()'s PeriodAggregate carry none of those fields
+  // (see substrate_savings_receipt.ts's own type definitions), anchorDigest()'s source_log_path
+  // is read here and deliberately never forwarded past this function, and
+  // savings_receipt_summary.ts's buildSavingsReceiptSummary() only accepts the two scalar
+  // anchorDigest fields (chainHead/totalChainRecords) it actually needs -- see that module's
+  // header for why its input shape makes forwarding source_log_path a compile error, not just a
+  // discipline.
+  ipcMain.handle('savings-receipt:summary', async (_event, args: { window?: SavingsReceiptWindow }) => {
+    try {
+      const window: SavingsReceiptWindow = args?.window && (SAVINGS_WINDOWS as string[]).includes(args.window)
+        ? args.window
+        : 'all';
+      const nowIso = new Date().toISOString();
+
+      const chainResult = verifySavingsChain();
+      const anchor = anchorDigest(); // { chain_head_hash, total_records, anchored_at, source_log_path }
+      const firstRecordUtc = getFirstRecordTimestamp();
+
+      if (anchor.total_records === 0) {
+        const summary = buildSavingsReceiptSummary({
+          window,
+          chainResult,
+          chainHead: anchor.chain_head_hash,
+          totalChainRecords: 0,
+          firstRecordUtc: null,
+          nowIso,
+          aggregate: null,
+          milestoneQueryCounts: { hour: 0, day: 0, week: 0, fortnight: 0, month: 0, quarter: 0 },
+          receiptBlock: null,
+        });
+        return summary;
+      }
+
+      const { from, to } = windowRange(window, nowIso, firstRecordUtc);
+      const aggregate = computePeriodAggregate(window, from, to);
+
+      const trailingWindows: SavingsReceiptTrailingWindow[] = ['hour', 'day', 'week', 'fortnight', 'month', 'quarter'];
+      const milestoneQueryCounts = {} as Record<SavingsReceiptTrailingWindow, number>;
+      for (const w of trailingWindows) {
+        const wr = windowRange(w, nowIso, firstRecordUtc);
+        milestoneQueryCounts[w] = computePeriodAggregate(w, wr.from, wr.to).total_queries;
+      }
+
+      // Resolve the install_key/sig_alg BEFORE building the signing text (both are part of the
+      // signed content itself) via a cheap public-key-only read (no decrypt, no signing yet),
+      // THEN sign once below. This install's keypair is always Ed25519
+      // (identity/localPeerKeypair.ts only ever generates that) -- signWithLocalPeerKey() below
+      // re-derives sig_alg from the actual key and throws if it is ever anything else, so this
+      // literal can never silently drift from what really signed it.
+      const { publicKeyHex } = ensureLocalPeerKeypair();
+      const fieldsForSigning: ReceiptBlockFields = {
+        window,
+        from,
+        to,
+        queries: aggregate.total_queries,
+        cost_avoided_usd: aggregate.cost_avoided_usd,
+        scope: aggregate.measurement_scope,
+        chain_head: anchor.chain_head_hash,
+        chain_records: anchor.total_records,
+        app_version: app.getVersion(),
+        install_key: publicKeyHex,
+        sig_alg: 'ed25519',
+      };
+      const signingText = receiptBlockSigningText(fieldsForSigning);
+      const { signatureHex, sigAlg } = signWithLocalPeerKey(signingText);
+      if (sigAlg !== fieldsForSigning.sig_alg) {
+        return { ok: false, error: `signing key algorithm "${sigAlg}" does not match expected "${fieldsForSigning.sig_alg}"` };
+      }
+      const receiptBlock = renderReceiptBlock(fieldsForSigning, signatureHex);
+
+      const summary = buildSavingsReceiptSummary({
+        window,
+        chainResult,
+        chainHead: anchor.chain_head_hash,
+        totalChainRecords: anchor.total_records,
+        firstRecordUtc,
+        nowIso,
+        aggregate,
+        milestoneQueryCounts,
+        receiptBlock,
+      });
+      return summary;
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  });
+
+  // ── Scavenger Hunt / "Haystack Needle" test #2 (D-BP223-BM0-X033-022) ──────────────────────
+  // Founder ruling 2026-09-19 23:27Z: a member types a well-known phrase; the LOCAL substrate
+  // (verified_eblets.jsonl, the same store the Answer Cache serves from) is searched for similar
+  // stored questions; the panel asks "did you mean one of these?"; the member picks one; the
+  // stored answer is shown WITH its sources. HARDWIRE-22: zero model calls, ever -- every branch
+  // below is synchronous computation over already-loaded disk records (see scavenger_hunt.ts's
+  // own header for the full "why no model call" accounting). Every search AND every selection
+  // appends its own record to the sibling hash-chained log (scavenger_hunt.ts's
+  // emitScavengerHuntRun) -- two real, distinct events, not one record mutated in place (this
+  // log, like the savings-receipt log it sits beside, is append-only).
+  ipcMain.handle('scavenger-hunt:search', async (_event, args: { phrase?: string }) => {
+    const t0 = Date.now();
+    try {
+      const phrase = (args?.phrase ?? '').toString();
+      if (!phrase.trim()) {
+        return { ok: false, error: 'empty phrase' };
+      }
+      const pool = await loadCandidatePool();
+      const result = findScavengerHuntMatches(phrase, pool);
+      const latency_ms = Date.now() - t0;
+      const tokens_used = measureSearchTokens(result);
+
+      emitScavengerHuntRun({
+        raw_phrase: result.raw_phrase,
+        normalized_phrase: result.normalized_phrase,
+        candidates_shown: result.candidates.length,
+        selected_question: null,
+        aliases_fired: result.aliases_fired,
+        tokens_used,
+        latency_ms,
+        sources_count: 0,
+      });
+
+      return {
+        ok: true,
+        raw_phrase: result.raw_phrase,
+        normalized_phrase: result.normalized_phrase,
+        aliases_fired: result.aliases_fired,
+        substrate_empty: result.substrate_empty,
+        candidates: result.candidates,
+        tokens_used,
+        latency_ms,
+        model_calls: 0,
+      };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('scavenger-hunt:select', async (
+    _event,
+    args: { question?: string; raw_phrase?: string; normalized_phrase?: string; candidates_shown?: number; aliases_fired?: string[] },
+  ) => {
+    const t0 = Date.now();
+    try {
+      const question = (args?.question ?? '').toString();
+      if (!question.trim()) {
+        return { ok: false, error: 'no question selected' };
+      }
+      const pool = await loadCandidatePool();
+      const entry = pool.find((e) => e.question === question && e.class !== 'component');
+      if (!entry) {
+        return { ok: false, error: 'selected question no longer found in the local substrate' };
+      }
+      const answer = buildScavengerHuntAnswer(entry);
+      const latency_ms = Date.now() - t0;
+      const tokens_used = measureAnswerTokens(answer);
+
+      emitScavengerHuntRun({
+        raw_phrase: args?.raw_phrase ?? question,
+        normalized_phrase: args?.normalized_phrase ?? question.toLowerCase(),
+        candidates_shown: args?.candidates_shown ?? 0,
+        selected_question: entry.question,
+        aliases_fired: args?.aliases_fired ?? [],
+        tokens_used,
+        latency_ms,
+        sources_count: answer.sources.length,
+      });
+
+      return {
+        ok: true,
+        question: answer.question,
+        answer: answer.answer,
+        sources: answer.sources,
+        tokens_used,
+        latency_ms,
+        model_calls: 0,
+      };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  });
+
+  ipcMain.handle('scavenger-hunt:popular', async (_event, args: { limit?: number }) => {
+    try {
+      const popular = computePopularPhrases(undefined, args?.limit ?? 10);
+      return { ok: true, popular };
     } catch (err) {
       return { ok: false, error: String(err) };
     }

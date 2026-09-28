@@ -18,6 +18,11 @@ import {
   writeFileSync,
 } from 'fs';
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'crypto';
+// D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: the health-check ping's model id
+// now reads config/model_roster.json's 'brain.haiku' role instead of a literal 'claude-haiku-4-7'
+// -- that literal was a ghost SKU, absent from the vendor's own pricing page (see model_roster.ts
+// and config/model_roster.json's brain.haiku entry for the corroborating fetch).
+import { getRosterModelId } from './model_roster';
 
 // ─── Types (mirrored in renderer/hearth/conjunction/types.ts) ────────────────
 
@@ -130,7 +135,7 @@ const AGENT_CONFIGS: Record<string, AgentStaticConfig> = {
             'content-type': 'application/json',
           },
           body: JSON.stringify({
-            model: 'claude-haiku-4-7',
+            model: getRosterModelId('brain.haiku'),
             max_tokens: 1,
             messages: [{ role: 'user', content: 'ping' }],
           }),

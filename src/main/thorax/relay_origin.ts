@@ -52,12 +52,12 @@ import { signFrame, verifyFrame, SIG_HEX_LEN } from './sign_verify';
  * disagree with itself about what was signed).
  */
 function signatureOnly(canonical: string, privateKeyHex: string): string {
-  return signFrame(canonical, privateKeyHex).slice(0, SIG_HEX_LEN);
+  return signFrame(canonical, privateKeyHex).slice(-SIG_HEX_LEN);
 }
 
 function checkSignature(canonical: string, signatureHex: string, publicKeyHex: string): boolean {
   if (signatureHex.length !== SIG_HEX_LEN) return false;
-  return verifyFrame(signatureHex + canonical, publicKeyHex).valid;
+  return verifyFrame(canonical + signatureHex, publicKeyHex).valid;
 }
 
 export interface RelayOriginFields {

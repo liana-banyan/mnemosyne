@@ -9,6 +9,13 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+// D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: the dispatched model id now reads
+// config/model_roster.json's 'brain.sonnet' role instead of a literal 'claude-sonnet-4-6'. The
+// per-token Joules cost formula below is a SEPARATE, older metering system (1 Joule = $0.001 USD
+// equivalent) unrelated to substrate_price_table.json/substrate_savings_receipt.ts and is left
+// untouched by this ticket -- it is not this ticket's scope, and its own comment already names
+// which rate it assumes.
+import { getRosterModelId } from '../model_roster';
 
 export interface Tier2FlagshipConfig {
   anthropicApiKey: string;
@@ -62,7 +69,7 @@ export async function tier2FlagshipEscalate(
     try {
       const client = new Anthropic({ apiKey: config.anthropicApiKey });
       const msg = await client.messages.create({
-        model: 'claude-sonnet-4-6',
+        model: getRosterModelId('brain.sonnet'),
         max_tokens: 16,
         messages: [{ role: 'user', content: prompt }],
       });
@@ -82,7 +89,7 @@ export async function tier2FlagshipEscalate(
       const result: Tier2Result = {
         answer,
         vendor: 'anthropic',
-        model: 'claude-sonnet-4-6',
+        model: getRosterModelId('brain.sonnet'),
         input_tokens: inputTokens,
         output_tokens: outputTokens,
         cost_joules: costJoules,
@@ -91,7 +98,7 @@ export async function tier2FlagshipEscalate(
       };
 
       await persistTier2Run(config.supabaseUrl, config.serviceKey, result);
-      console.log(`  [TIER2] Anthropic claude-sonnet-4-6 → ${answer ?? 'NULL'} · ${costJoules} Joules · remaining=${config.joulesRemainingRef.value}`);
+      console.log(`  [TIER2] Anthropic ${getRosterModelId('brain.sonnet')} → ${answer ?? 'NULL'} · ${costJoules} Joules · remaining=${config.joulesRemainingRef.value}`);
       return result;
     } catch (err: any) {
       console.warn(`  [TIER2] Anthropic API failed: ${err?.message} — trying OpenAI fallback`);

@@ -18,6 +18,8 @@ import { SubstrateAwakensJoinPanel } from './SubstrateAwakensJoinPanel';
 // component's file header for the full Bishop-audit rationale.
 import { NexusAuthoritySettings } from '../settings/NexusAuthoritySettings';
 import { NexusAuthoritySignInPanel } from '../settings/NexusAuthoritySignInPanel';
+// D-BP223-BM0-X029-019: Nexus Authorities, how each flagship is reached (self-contained, own IPC calls).
+import { FlagshipAuthoritiesPanel } from '../settings/FlagshipAuthoritiesPanel';
 // D-BP151-037/BISHOP/seg-query-capture-archive -- new section, self-contained (own state,
 // own IPC calls), same mounting convention as NexusAuthoritySettings above.
 import { QueryCaptureArchivePanel } from './QueryCaptureArchivePanel';
@@ -1002,6 +1004,79 @@ function MnemDrtPanel() {
   );
 }
 
+// ─── D-BP223-BM0-X029-018 — "You come first" (Founder k/0ee57a97) ────────────────────────────
+// Default ON. Same ai-dispatch:get-settings / save-settings pair as HomeworkPanel below; the field
+// is `you_come_first`, and undefined means ON, so `!== false` is the honest default here.
+function YouComeFirstPanel() {
+  const [on, setOn] = React.useState(true);
+  const [loaded, setLoaded] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const s = styles;
+
+  React.useEffect(() => {
+    void (async () => {
+      try {
+        const res = await window.amplify?.aiDispatch?.getSettings?.();
+        const settings = res?.settings as { you_come_first?: boolean } | undefined;
+        if (res?.ok && settings) setOn(settings.you_come_first !== false);
+      } catch {
+        // non-fatal -- defaults to ON, which matches the real default
+      }
+      setLoaded(true);
+    })();
+  }, []);
+
+  const toggle = React.useCallback(async () => {
+    const next = !on;
+    setSaving(true);
+    setOn(next);
+    try {
+      await window.amplify?.aiDispatch?.saveSettings?.({ you_come_first: next });
+    } catch {
+      // non-fatal -- next getSettings() read reconciles
+    }
+    setSaving(false);
+  }, [on]);
+
+  return (
+    <section style={s.section}>
+      <div style={s.sectionHeader}>You come first</div>
+      <div style={s.card}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: '#e2e8f0', marginBottom: 3 }}>
+              You come first (on by default)
+            </div>
+            <div style={{ fontSize: 9, color: '#64748b', lineHeight: 1.6 }}>
+              While you are using this computer, MnemosyneC pauses its background AI work and picks it back up when you step away.
+            </div>
+            <div style={{ fontSize: 9, color: '#64748b', lineHeight: 1.6, marginTop: 4 }}>
+              {on
+                ? 'On: pauses while you type or move the mouse, while a full-screen video, game or presentation is up, or when graphics memory is short or cannot be read. Sharing small files with the network keeps going.'
+                : 'Off: background work runs at full speed even while you use the computer. Results made that way are labeled "desktop in use".'}
+              {' '}Either way it never opens a window, takes focus, or touches your browser.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => void toggle()}
+            disabled={saving || !loaded}
+            aria-pressed={on}
+            style={{
+              ...s.chip,
+              minWidth: 44,
+              ...(on ? { ...s.chipActive } : {}),
+              cursor: saving ? 'wait' : 'pointer',
+            }}
+          >
+            {on ? 'ON' : 'OFF'}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 // ─── BP140-K3 — Homework: idle-time, AC-power, $0 local-Ollama-only background worker ────────
 // Master toggle + idle-threshold picker. Round-trips through the SAME
 // ai-dispatch:get-settings / ai-dispatch:save-settings IPC pair ProveItWorksTab.tsx's Answer
@@ -1343,6 +1418,7 @@ export function SettingsTab({
     { key: 'ai-model',       label: 'AI Model Assignment',    keywords: ['ai model', 'ollama', 'bishop', 'knight', 'pawn', 'rook', 'orchestrator', 'builder', 'researcher', 'primary assistant'] },
     { key: 'hardware-tier',  label: 'Hardware Tier & Plow Model', keywords: ['hardware', 'ram', 'plow model', 'gemma2', 'qwen', 'lightweight', 'standard', 'premium', 'heavy', 'model select'] },
     { key: 'mnem-drt',       label: 'Memory Depth Tier',      keywords: ['mnem', 'drt', 'retrieval', 'specialist', 'wikipedia', 'wikidata', 'arxiv', 'wolfram', 'memory depth'] },
+    { key: 'you-come-first', label: 'You come first',          keywords: ['you come first', 'precedence', 'pause', 'background', 'slow', 'gaming', 'video', 'fullscreen', 'my computer', 'performance', 'gpu', 'vram', 'mesh'] },
     { key: 'homework',       label: 'Homework (free background work)', keywords: ['homework', 'idle', 'background', 'free', 'ollama', 'battery', 'ac power', 'forage'] },
     { key: 'advanced',       label: 'Advanced',               keywords: ['devtools', 'developer tools', 'debugging', 'remote-debugging', 'advanced', 'inspect', 'diagnostic'] },
     { key: 'appearance',     label: 'Appearance',             keywords: ['appearance', 'theme', 'dark', 'light', 'zoom', 'interface zoom', 'scale'] },
@@ -1601,6 +1677,9 @@ export function SettingsTab({
 
       {/* BP137 0.9.12 Stage F1: Authorities (Nexus) sign-in panel — new section, self-contained */}
       <NexusAuthoritySignInPanel />
+
+      {/* D-BP223-BM0-X029-019 (Founder k/d74e863d, k/fbce54d5): each flagship, MANUAL or AUTOMATIC, the user's own keys */}
+      <FlagshipAuthoritiesPanel />
 
       {/* D-BP151-037/BISHOP/seg-query-capture-archive: Query Capture Archive — new section,
           self-contained (the consent switch + three-act list live entirely inside it). */}
@@ -1901,6 +1980,14 @@ export function SettingsTab({
         id="settings-section-mnem-drt"
       >
         <MnemDrtPanel />
+      </div>
+
+      {/* D-BP223-BM0-X029-018 — "You come first" (default ON), placed just above Homework */}
+      <div
+        ref={setSectionRef('you-come-first') as React.RefCallback<HTMLDivElement>}
+        id="settings-section-you-come-first"
+      >
+        <YouComeFirstPanel />
       </div>
 
       {/* BP140-K3 — Homework: idle-time/AC-power/$0-Ollama-only background worker toggle */}

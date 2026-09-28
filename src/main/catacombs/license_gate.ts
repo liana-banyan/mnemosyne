@@ -112,9 +112,9 @@ export function licenseOfferPrompt(): string {
   return [
     'Liana Banyan Cooperative Knowledge Library -- Commercial Access',
     '',
-    'You are using the Alexandrian Catacombs under the SSPL base license.',
-    'As a for-profit entity, Section 13 of SSPL requires a commercial license',
-    'to offer this service to others.',
+    'You are using the Alexandrian Catacombs under the Mnemosyne Cooperative Source License 2.0.',
+    'Commercial Use by a for-profit entity requires the Cooperative Endorsement Commercial License',
+    '(20% of Measured Annual Savings).',
     '',
     'We are extending a 30-day 50% introductory offer:',
     '  -- Standard commercial license: contact licensing@lianabanyan.com',

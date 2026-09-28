@@ -6,7 +6,9 @@
 // that you can pick and choose from with categories." — Founder direct, BP041
 //
 // Distribution model:
-//   - SSPL umbrella: all plugins must bind SSPL license (cooperative-class)
+//   - License: all plugins bind the Mnemosyne Cooperative Source License 2.0 (LicenseRef-MCSL-2.0,
+//     LICENSE.md); Commercial Use needs the Commercial License (COMMERCIAL_LICENSE.md).
+//     SSPL-1.0 retired from 0.9.31 (D-BP223-BM0-X030-105, Founder k/03d1dd20).
 //   - Substitution-only payment (NO-FIAT-CONVERSION Blood Rule)
 //   - IP Ledger registration required per plugin (appendPortalSearchEntry pattern)
 //   - Developer keeps 83.3%; platform margin Cost+20%; Substitution-only settlement
@@ -37,7 +39,7 @@ export type PluginStatus =
   | 'draft'       // submitted; under Detective + Counsel review
   | 'active'      // approved; listed in marketplace
   | 'suspended'   // temporarily removed (Harper Guild or Detective review)
-  | 'revoked';    // permanently removed (SSPL violation or policy breach)
+  | 'revoked';    // permanently removed (license violation or policy breach)
 
 export interface PluginManifest {
   plugin_id:          string;
@@ -46,7 +48,7 @@ export interface PluginManifest {
   category:           PluginCategory;
   description:        string;
   author_member_id:   string;   // cooperative-substrate member_id; never real-name (BLOOD RULE)
-  license:            'SSPL-1.0'; // enforced; no other license accepted
+  license:            'LicenseRef-MCSL-2.0'; // enforced; no other license accepted
   ip_ledger_id:       string;   // ledger_id from IP Ledger registration
   entry_point:        string;   // relative path to main TS/JS module
   min_mnemosyne_ver:  string;
@@ -157,7 +159,7 @@ export function registerPlugin(
     category:          req.category,
     description:       req.description,
     author_member_id:  req.author_member_id,
-    license:           'SSPL-1.0',
+    license:           'LicenseRef-MCSL-2.0',
     ip_ledger_id,
     entry_point:       req.entry_point,
     min_mnemosyne_ver: req.min_mnemosyne_ver,

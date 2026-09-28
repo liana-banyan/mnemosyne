@@ -53,7 +53,7 @@
     DetailPrint "MnemosyneC autostart task registered (HIGHEST privilege)"
   ${EndIf}
 
-  DetailPrint "MnemosyneC ${VERSION} install ready — SSPL · Pledge #2260 · No Ads · No Strings"
+  DetailPrint "MnemosyneC ${VERSION} install ready - Mnemosyne Cooperative Source License 2.0 - Pledge #2260 - No Ads - No Strings"
 !macroend
 
 ; D3 persistence — never delete user identity or config

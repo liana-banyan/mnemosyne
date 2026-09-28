@@ -343,6 +343,28 @@ interface BrowserAuthorityExtractionResultMessage {
    *  why Perplexity has no entry yet. Always present (never omitted) on this static (Google/
    *  Perplexity) extraction path -- see extractBrowserAuthorityAnswer()'s own header. */
   challenge: boolean;
+  /** D-BP223-BM0-X014-010-TRUNCFIX, ADDITIVE/OPTIONAL -- how the URL-query (Google/Perplexity)
+   *  settle poll ended. Absent on every path that does not poll (the interactive authorities have
+   *  their own separate result message). See pollUrlQueryAnswerUntilStable() below for what each
+   *  value means and for the live measurement that forced this field to exist:
+   *    'stable'              the answer text stopped growing and was read whole,
+   *    'stable_at_ceiling'   the ceiling fired, but the text had been byte-identical for at least
+   *                          the immediately preceding tick, so it is reported as a real answer
+   *                          (same bar runClaudeInteractiveQuery's own ceiling branch accepts),
+   *    'timeout_growing'     the ceiling fired while the text was STILL growing -- an honest
+   *                          timeout, never a silently truncated success,
+   *    'never_appeared'      no answer-box selector ever matched inside the first-text window,
+   *    'challenge'           a structural challenge URL, returned immediately without polling. */
+  settleOutcome?: 'stable' | 'stable_at_ceiling' | 'timeout_growing' | 'never_appeared' | 'challenge';
+  /** D-BP223-BM0-X014-010-TRUNCFIX, ADDITIVE/OPTIONAL -- poll ticks spent, and wall milliseconds
+   *  spent, inside the settle poll. Diagnostics only; never load-bearing for success/failure. */
+  settleTicks?: number;
+  settleMs?: number;
+  /** D-BP223-BM0-X014-010-TRUNCFIX, ADDITIVE/OPTIONAL -- why this extraction failed, when it
+   *  failed for a reason the poll itself can name. Read by index.ts's static-path classifier,
+   *  which maps 'settle_timeout_still_growing' onto the existing 'timeout' dispatch outcome so a
+   *  timeout stays distinguishable from a genuinely empty answer. Absent on success. */
+  reason?: string;
 }
 
 /** (KN-BP147-M2) One ranked candidate result independently listed by the underlying page for
@@ -684,17 +706,158 @@ function extractMultiResultCandidates(
   return Promise.resolve([]);
 }
 
+// ─── D-BP223-BM0-X014-010-TRUNCFIX: the URL-query path polls to stability, like the ────────────
+//     interactive path already did.
+//
+// THE DEFECT, MEASURED LIVE (2026-09-12 16:14 Central, this ticket, a real Perplexity reply
+// through the real machine-query window): the URL-query authorities (user_google,
+// user_perplexity) were scraped exactly ONCE, at index.ts's fixed
+// BROWSER_AUTHORITY_MAIN_SETTLE_DELAY_MS (2,500 ms after did-finish-load). Perplexity STREAMS its
+// answer, so that single scrape catches a prefix and reports it as a complete success. The same
+// question, same page, same session: the fixed scrape returned 306 characters; the answer settled
+// at 935. An earlier live run this same day measured 51 characters of a 1,321-character reply.
+// Nothing detected it, because a mid-stream prefix is a perfectly valid-looking non-empty string.
+//
+// THE INTERACTIVE AUTHORITIES NEVER HAD THIS BUG. runClaudeInteractiveQuery /
+// runGenericInteractiveQuery below poll the reply element on a CLAUDE_INTERACTIVE_POLL_MS tick and
+// only accept text that has held steady for CLAUDE_INTERACTIVE_STABLE_TICKS_REQUIRED consecutive
+// ticks. This function gives the URL-query path THE SAME settle rule, by REUSING those two
+// constants rather than inventing a second, divergent set of numbers -- two settle
+// implementations drifting apart is exactly how this defect was born.
+//
+// It is bounded on every path, so a hung or endlessly-streaming page cannot block forever:
+//   * no text at all inside URL_QUERY_FIRST_TEXT_MAX_WAIT_MS -> give up immediately, which
+//     preserves the old fast honest-empty latency (a Google page with no answer box still reports
+//     back in ~3 s, and index.ts's existing retry-once path still fires exactly as before);
+//   * text present but still growing at URL_QUERY_SETTLE_MAX_WAIT_MS -> honest
+//     'timeout_growing' / reason 'settle_timeout_still_growing', NEVER a truncated success;
+//   * text present and byte-identical for at least the immediately preceding tick when the
+//     ceiling fires -> accepted as 'stable_at_ceiling', the SAME bar runClaudeInteractiveQuery's
+//     own ceiling branch already accepts (reused, not invented).
+// A structural challenge URL short-circuits with no polling at all, so a rate-limit page is still
+// reported in one tick rather than being waited out.
+
+/** Hard ceiling on the whole settle poll, measured from the moment 'browser-authority-run-query'
+ *  arrives. MEASURED, not invented: the three live Perplexity runs available to this ticket
+ *  finished growing 3.6 s, 4.6 s and 4.6 s after the old fixed scrape, so 20 s is a little over
+ *  4x the worst observed settle. Hitting it is not a truncation -- it is an honest, named
+ *  timeout (see settleOutcome above). index.ts's BROWSER_AUTHORITY_MAIN_TIMEOUT_MS (the OUTER cap
+ *  around this INNER one) is raised in the same commit and carries the full arithmetic. */
+const URL_QUERY_SETTLE_MAX_WAIT_MS = 20_000;
+/** How long to wait for ANY answer text to appear before giving up. Deliberately the same 3 s as
+ *  CLAUDE_COMPOSER_FIND_MAX_WAIT_MS below and for the same reason ("a page that will NEVER have
+ *  one should be reported back almost immediately, not waited out"): a Google SERP with no answer
+ *  box, a login wall, or a selector drift must not spend the full 20 s ceiling above. */
+const URL_QUERY_FIRST_TEXT_MAX_WAIT_MS = 3_000;
+
+type UrlQuerySettledExtraction = Omit<BrowserAuthorityExtractionResultMessage, 'results'>;
+
+function pollUrlQueryAnswerUntilStable(authority: BrowserAuthorityName): Promise<UrlQuerySettledExtraction> {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    let ticks = 0;
+    let ticksSinceChange = 0;
+    let lastSnippet = '';
+    let lastResult = extractBrowserAuthorityAnswer(authority);
+
+    const finish = (
+      result: UrlQuerySettledExtraction,
+      settleOutcome: NonNullable<BrowserAuthorityExtractionResultMessage['settleOutcome']>,
+      success: boolean,
+      reason?: string,
+    ) => {
+      clearInterval(pollHandle);
+      const settled: UrlQuerySettledExtraction = {
+        ...result,
+        success,
+        snippet: success ? result.snippet : '',
+        sourceUrl: success ? result.sourceUrl : null,
+        selectorUsed: success ? result.selectorUsed : null,
+        citations: success ? result.citations : [],
+        settleOutcome,
+        settleTicks: ticks,
+        settleMs: Date.now() - startedAt,
+        ...(reason ? { reason } : {}),
+      };
+      logInjectionEvent('browser_authority_settle_poll', {
+        authority,
+        outcome: settleOutcome,
+        success,
+        chars: settled.snippet.length,
+        ticks,
+        ms: settled.settleMs,
+        url: window.location.href,
+      });
+      resolve(settled);
+    };
+
+    // A structural challenge URL is a fact about the page, not about the answer's length --
+    // report it in one tick exactly as the pre-fix single scrape did, never wait it out.
+    if (lastResult.challenge) {
+      finish(lastResult, 'challenge', false);
+      return;
+    }
+
+    const pollHandle = setInterval(() => {
+      ticks++;
+      const current = extractBrowserAuthorityAnswer(authority);
+      if (current.challenge) {
+        finish(current, 'challenge', false);
+        return;
+      }
+      const snippet = current.success ? current.snippet : '';
+      if (snippet.length > 0) lastResult = current;
+
+      if (snippet.length > 0 && snippet === lastSnippet) {
+        ticksSinceChange++;
+      } else {
+        ticksSinceChange = 0;
+        lastSnippet = snippet;
+      }
+
+      const elapsed = Date.now() - startedAt;
+
+      // Settled: non-empty and unchanged for the same number of consecutive ticks the interactive
+      // driver requires. Returns AS SOON AS stability is detected -- it never waits out the rest
+      // of the ceiling once the answer is done.
+      if (snippet.length > 0 && ticksSinceChange >= CLAUDE_INTERACTIVE_STABLE_TICKS_REQUIRED) {
+        finish(lastResult, 'stable', true);
+        return;
+      }
+
+      // Nothing at all yet, and the first-text window is spent -- honest empty, fast, exactly as
+      // before this fix.
+      if (snippet.length === 0 && elapsed > URL_QUERY_FIRST_TEXT_MAX_WAIT_MS) {
+        finish(lastResult, 'never_appeared', false, 'no_answer_element');
+        return;
+      }
+
+      if (elapsed > URL_QUERY_SETTLE_MAX_WAIT_MS) {
+        if (snippet.length > 0 && ticksSinceChange >= 1) {
+          finish(lastResult, 'stable_at_ceiling', true);
+        } else {
+          finish(lastResult, 'timeout_growing', false, 'settle_timeout_still_growing');
+        }
+      }
+    }, CLAUDE_INTERACTIVE_POLL_MS);
+  });
+}
+
 ipcRenderer.on('browser-authority-run-query', (_event, payload: BrowserAuthorityRunQueryRequest) => {
   logInjectionEvent('browser_authority_run_query_received', {
     authority: payload.authority,
     url: window.location.href,
   });
 
-  const result = extractBrowserAuthorityAnswer(payload.authority);
+  // D-BP223-BM0-X014-010-TRUNCFIX: was `extractBrowserAuthorityAnswer(payload.authority)`, one
+  // synchronous scrape of a page that may still be streaming. See the banner above.
+  pollUrlQueryAnswerUntilStable(payload.authority).then((result) => {
 
   logInjectionEvent('browser_authority_extraction_result', {
     success: result.success,
     selector_used: result.selectorUsed,
+    settle_outcome: result.settleOutcome,
+    chars: result.snippet.length,
     url: window.location.href,
   });
 
@@ -710,6 +873,8 @@ ipcRenderer.on('browser-authority-run-query', (_event, payload: BrowserAuthority
     });
     ipcRenderer.sendToHost('browser-authority-extraction-result', { ...result, results });
   });
+
+  }); // D-BP223-BM0-X014-010-TRUNCFIX: closes pollUrlQueryAnswerUntilStable().then(...)
 });
 
 // ─── (this build pass) claude.ai/new interactive browser authority ──────────────────────────

@@ -19,6 +19,10 @@
 
 import type { SubstrateContextBundle } from './substrate_reader';
 import type { CourtPackage, CouncilPackageName, EscalationPolicy, CouncilMember } from './court_packages';
+// D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: CLAUDE_MODEL and
+// ClaudeBrainAdapter.brain_id now read config/model_roster.json's 'brain.sonnet' role instead of
+// carrying their own literal 'claude-sonnet-4-6' strings.
+import { getRosterModelId } from '../model_roster';
 
 // ─── Tool types (minimal) ─────────────────────────────────────────────────────────
 
@@ -100,7 +104,7 @@ const TASK_COUNCIL_MAP: Record<TaskCategory, CouncilPackageName> = {
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_API_VERSION = '2023-06-01';
-const CLAUDE_MODEL = 'claude-sonnet-4-6';
+const CLAUDE_MODEL = getRosterModelId('brain.sonnet');
 
 function buildSubstrateSystemPrompt(context: SubstrateContextBundle): string {
   // MOUNTAIN_1b_ADDITION: prepend domain-primed context if present (set by runPlowLoop)
@@ -130,7 +134,7 @@ function buildSubstrateSystemPrompt(context: SubstrateContextBundle): string {
 }
 
 export class ClaudeBrainAdapter implements CCI {
-  readonly brain_id = 'claude-sonnet-4-6';
+  readonly brain_id: string = getRosterModelId('brain.sonnet');
   readonly vendor = 'anthropic' as const;
   readonly min_context_window = 200000;
   readonly supports_tools = true;

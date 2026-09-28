@@ -122,6 +122,12 @@ export function Layer2ProveIt({ onBack, onDone }: Layer2ProveItProps): React.Rea
           "Prove It Works" panel and the live Diagnostics Meter run and score results fresh
           each time, so nothing here is pre-graded or pre-filled in advance.
         </p>
+        <p style={S.introLine}>
+          {/* D-BP223-BM04-X033S3-009: names the cross-person demo without inventing a number --
+              the real count lives on the tab itself (region D's own list), never duplicated here. */}
+          Inside, "Use a question somebody else asked" answers a stranger's question for you,
+          instantly, with its sources — zero model calls, zero cost.
+        </p>
 
         <button type="button" style={S.proceedBtn} onClick={handleGoToHonestProof}>
           Continue to Prove It Works &amp; the live Meter

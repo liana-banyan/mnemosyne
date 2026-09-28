@@ -2406,6 +2406,11 @@ ${nodesHtml}
         tier,
         routing_raw: result.routing,
         model_used: result.model_used ?? null,
+        // D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: "price what actually ran" --
+        // Ollama's own /api/generate response `model` field, carried through
+        // substrate_router.ts's QueryResult. emitSavingsReceipt() prices against this id when
+        // present, falling back to model_used (the requested id) only when it is null.
+        model_id_from_provider: result.model_id_from_provider ?? null,
         input_tokens: result.input_tokens_real ?? null,
         output_tokens: result.output_tokens_real ?? null,
         served_text_chars: servedText ? servedText.length : null,

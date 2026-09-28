@@ -189,13 +189,13 @@ export function WelcomeView({ onComplete }: WelcomeViewProps): React.ReactElemen
         <h1 style={{ fontSize: '2rem', fontWeight: 700, color: '#e2e8f0', lineHeight: 1.25, margin: '0 0 6px', textAlign: 'center' }}>Your AI has Amnesia.</h1>
         <h2 style={{ fontSize: '1.6rem', fontWeight: 600, color: '#94a3b8', lineHeight: 1.25, margin: '0 0 14px', textAlign: 'center' }}>Dr. MnemosyneC has the Cure.</h2>
 
-        {/* SEG-S-3: Subline -- SEG-V-7: updated copy + SSPL tooltip span */}
+        {/* SEG-S-3: Subline -- SEG-V-7: updated copy + license tooltip span (X030-061: MCSL 2.0) */}
         <p style={subline}>
           Private AI memory and retrieval on your own computer. Free Forever{' '}
           <span
-            title="Server Side Public License -- anti-extraction free-and-open license used by MongoDB and others. Means Free Forever for users, with copyleft protection against capture by closed cloud platforms."
+            title="Mnemosyne Cooperative Source License 2.0 -- source-available. Free for individuals, cooperatives, members, researchers and non-profits. Commercial use requires a signed Commercial License at 20% of measured savings."
             style={{ cursor: 'help' }}
-          >(SSPL)</span>. No Ads, No Strings. Great to use, better to join. Test it first or start using it now.
+          >(Cooperative Source License)</span>. No Ads, No Strings. Great to use, better to join. Test it first or start using it now.
         </p>
 
         {/* SEG-S-3: Bullets */}

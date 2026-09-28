@@ -125,8 +125,11 @@ describe('D-BP164-M0-068 TEST 3: COUNTERFACTUAL DOLLARS -- priced against a NAME
         response: JSON.stringify({ x: 'y' }),
         done_reason: 'stop',
         // Large, deliberately round token counts so the arithmetic is easy to sanity-check by
-        // hand against substrate_price_table.json's own claude-sonnet-5 row ($2/$10 per MTok):
-        // expected counterfactual = (1_000_000/1e6)*2 + (500_000/1e6)*10 = 2 + 5 = $7.00
+        // hand against substrate_price_table.json's own default_counterfactual_model row --
+        // claude-opus-5 ($5/$25 per MTok) as of D-BP223-BM04-h2cbpv9w-170 (was claude-sonnet-5,
+        // $2/$10, before that dispatch repointed the counterfactual at the true naive/no-cascade
+        // flagship baseline, config/model_roster.json's brain.opus):
+        // expected counterfactual = (1_000_000/1e6)*5 + (500_000/1e6)*25 = 5 + 12.5 = $17.50
         prompt_eval_count: 1_000_000,
         eval_count: 500_000,
       }),
@@ -139,13 +142,14 @@ describe('D-BP164-M0-068 TEST 3: COUNTERFACTUAL DOLLARS -- priced against a NAME
       expect(typeof rec.dollars.counterfactual_usd).toBe('number');
       expect(rec.dollars.counterfactual_usd).not.toBeNull();
       expect(rec.dollars.counterfactual_usd as number).toBeGreaterThan(0);
-      // Exact figure per substrate_price_table.json's live claude-sonnet-5 row, sanity-checked
-      // rather than hardcoded blind -- if the Founder-controlled table's rate ever changes, this
-      // assertion is meant to fail loudly rather than silently drift.
-      expect(rec.dollars.counterfactual_usd as number).toBeCloseTo(7.0, 6);
-      expect(rec.dollars.counterfactual_model).toBe('claude-sonnet-5');
+      // Exact figure per substrate_price_table.json's live default_counterfactual_model row
+      // (claude-opus-5, $5/$25 per MTok as of D-BP223-BM04-h2cbpv9w-170), sanity-checked rather
+      // than hardcoded blind -- if the Founder-controlled table's rate or default model ever
+      // changes, this assertion is meant to fail loudly rather than silently drift.
+      expect(rec.dollars.counterfactual_usd as number).toBeCloseTo(17.5, 6);
+      expect(rec.dollars.counterfactual_model).toBe('claude-opus-5');
       expect(rec.dollars.counterfactual_rate_source).toBeTruthy();
-      expect(rec.dollars.counterfactual_reason).toContain('claude-sonnet-5');
+      expect(rec.dollars.counterfactual_reason).toContain('claude-opus-5');
     } finally {
       global.fetch = originalFetch;
     }

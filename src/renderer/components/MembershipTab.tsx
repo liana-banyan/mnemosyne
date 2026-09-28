@@ -368,8 +368,8 @@ export function MembershipTab() {
             Free forever if you want to fork. Cost+20% if you stay.
           </div>
           <div style={{ fontSize: 11, color: '#475569', lineHeight: 1.6, marginBottom: 10 }}>
-            MnemosyneC ships under SSPL. You can fork it, self-host it, run it forever at zero cost.
-            If you build a product on it, you share the stack (SSPL §13). If you stay in the cooperative,
+            MnemosyneC ships under the Mnemosyne Cooperative Source License 2.0. Individuals and cooperatives can fork it, self-host it, run it forever at zero cost.
+            Commercial use needs a signed license at 20% of measured savings. If you stay in the cooperative,
             you get the full mesh — platform margin is Cost+20%, never more.
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -385,7 +385,7 @@ export function MembershipTab() {
             >
               GitHub →
             </a>
-            <span style={{ fontSize: 11, color: '#334155' }}>Pledge #2260 · SSPL</span>
+            <span style={{ fontSize: 11, color: '#334155' }}>Pledge #2260 · Cooperative Source License</span>
           </div>
         </div>
       </div>

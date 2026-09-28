@@ -13,6 +13,9 @@
 import type { DatabaseConfig } from './substrate_reader';
 import ws from 'ws';
 import { getAnonKey, getSupabaseUrl } from '../shared/anon_key';
+// D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: adjudicator_council's flagship
+// member model_id now reads config/model_roster.json's 'brain.sonnet' role.
+import { getRosterModelId } from '../model_roster';
 
 // ─── Types ────────────────────────────────────────────────────────────────────────
 
@@ -133,7 +136,7 @@ const DEFAULT_PACKAGES: Record<Exclude<CouncilPackageName, 'core_mic_live'>, Cou
     name: 'adjudicator_council',
     description: 'flagship Sonnet 4.6 fallback · used only on divergence from other councils',
     members: [
-      { model_id: 'claude-sonnet-4-6', vendor: 'anthropic' },
+      { model_id: getRosterModelId('brain.sonnet'), vendor: 'anthropic' },
     ],
     variance_threshold: 0.0,
     escalation_policy: 'always_flagship',
@@ -152,7 +155,9 @@ async function buildCoreMicLivePackage(): Promise<CourtPackage> {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { createClient } = require('@supabase/supabase-js') as typeof import('@supabase/supabase-js');
     const url = getSupabaseUrl();
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY || getAnonKey();
+    // D-BP223-BM0-X037-009b: no service-role branch in client code. HARDWIRE-03 standing
+  // refusal: no client install can safely hold that key.
+  const key = getAnonKey();
     if (!url || !key) throw new Error('[court_packages] Supabase env vars not set for CORE_MIC_LIVE');
     const supabase = createClient(url, key, { auth: { persistSession: false }, realtime: { transport: ws as unknown as typeof WebSocket } });
     // BP133 Yoke #26: peer_presence's column is `state`, not `status`.

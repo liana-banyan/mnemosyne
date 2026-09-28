@@ -433,7 +433,7 @@ export function LeanAskTab({ onSwitchToHome, handshakeSoundEnabled = false }: Le
         if (!registry) return;
         const [listRes, activeRes] = await Promise.all([registry.list(), registry.getActive()]);
         if (activeRes.ok && activeRes.brain_id && listRes.ok && Array.isArray(listRes.brains)) {
-          const active = listRes.brains.find((b: { brain_id: string }) => b.brain_id === activeRes.brain_id) as
+          const active = listRes.brains.find((b) => (b as { brain_id: string }).brain_id === activeRes.brain_id) as
             { brain_id: string; kind: 'flagship' | 'local'; model_id: string } | undefined;
           if (active) setActiveBrainLabel({ id: active.brain_id, kind: active.kind, modelId: active.model_id });
         }
@@ -1231,7 +1231,7 @@ export function LeanAskTab({ onSwitchToHome, handshakeSoundEnabled = false }: Le
             Download now
           </button>
           <button
-            onClick={runCheck}
+            onClick={() => { void runCheck(); }}
             disabled={retrying}
             style={{
               background: 'none',
@@ -1268,7 +1268,7 @@ export function LeanAskTab({ onSwitchToHome, handshakeSoundEnabled = false }: Le
         }}>
           <span style={{ flex: 1 }}>Could not reach your local AI. Is Ollama running?</span>
           <button
-            onClick={runCheck}
+            onClick={() => { void runCheck(); }}
             disabled={retrying}
             style={{
               background: 'none',

@@ -51,10 +51,16 @@ import { homedir } from 'os';
 const MIC_CHANNEL_CRYPTO_PATH =
   'C:/Users/Administrator/Documents/LianaBanyanPlatform/BISHOP_DROPZONE/MIC_CHANNEL/mic_channel_crypto.js';
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { socceriHash } = require(MIC_CHANNEL_CRYPTO_PATH) as {
-  socceriHash: (payloadBytes: string | Buffer) => string;
-};
+// D-BP223-BM0-X029-012, MEASURED ON M2 2026-09-16T20:56Z: the top-level require(MIC_CHANNEL_CRYPTO_PATH) above threw
+// "Cannot find module" on every machine that is not M0 (the path is M0's estate checkout), which surfaced as
+// "A JavaScript error occurred in the main process" at boot of the installed 0.9.30 on M2 (require stack
+// ore_store -> canonical_pipeline -> compute_sidecar -> method_silo -> liana_terminal_engine -> index). The constant
+// is kept for the record. socceriHash now comes from this repo's own keys_engines/key_signer.ts, the in-repo
+// definition mic_channel_crypto.js mirrors: sha512 hex of the payload bytes, the same bytes as update(string) in UTF-8.
+import { socceriHash as socceriHashBytes } from '../keys_engines/key_signer';
+const socceriHash = (payloadBytes: string | Buffer): string =>
+  socceriHashBytes(typeof payloadBytes === 'string' ? Buffer.from(payloadBytes, 'utf8') : payloadBytes);
+void MIC_CHANNEL_CRYPTO_PATH;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

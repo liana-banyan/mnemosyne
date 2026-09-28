@@ -61,7 +61,10 @@ function getSupabaseClient() {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { createClient } = require('@supabase/supabase-js') as typeof import('@supabase/supabase-js');
   const url = getSupabaseUrl();
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || getAnonKey();
+  // D-BP223-BM0-X037-009: no service-role branch in client code. A member's machine never has
+  // that variable, so this only ever elevated a developer or CI box to full database rights by
+  // accident. HARDWIRE-03 standing refusal: no client install can safely hold that key.
+  const key = getAnonKey();
   if (!url || !key) throw new Error('[stamp_certify] Supabase env vars not set');
   return createClient(url, key, { auth: { persistSession: false }, realtime: { transport: ws as unknown as typeof WebSocket } });
 }
@@ -99,6 +102,26 @@ export async function stampCertify(params: StampCertifyParams): Promise<StampCer
   // failed RLS with "new row violates row-level security policy" and silently dropped EVERY
   // replication write (the collective-learning share-back never persisted). A client-generated
   // entry_id lets the receipt still carry a real id without needing a read-back / anon SELECT.
+  // D-BP223-BM0-X037-009. PUBLISH THE SIGNER'S PUBLIC KEY BEFORE THE SIGNATURE IT CHECKS.
+  // Measured 2026-09-24 before this change: ip_ledger_entries held 919 signed rows across 4
+  // signers, and ring_bearer_registry held exactly ONE row, a July test peer that signed none of
+  // them. Nothing in the whole tree wrote that table. So not one signature in the IP claim ledger
+  // could be verified by anybody, including us, and the proof exporter papered over it by pasting
+  // the local machine's key instead. A signature nobody can check is not a receipt.
+  // peer_id is sha256(public_key_hex)[0..32], so this row is self-authenticating and the database
+  // enforces that binding; a failure here must never block the stamp itself.
+  try {
+    const { error: regErr } = await supabase
+      .from('ring_bearer_registry')
+      .insert({ peer_id: identity.peer_id, public_key_hex: identity.public_key_hex });
+    // 23505 = already registered, which is the normal case after the first stamp.
+    if (regErr && regErr.code !== '23505') {
+      console.warn('[stamp_certify] could not publish signer public key:', regErr.message);
+    }
+  } catch (err) {
+    console.warn('[stamp_certify] signer key registration threw:', err instanceof Error ? err.message : String(err));
+  }
+
   const entry_id = randomUUID();
   const { error } = await supabase
     .from('ip_ledger_entries')

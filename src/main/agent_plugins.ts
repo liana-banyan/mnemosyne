@@ -1,7 +1,9 @@
 // SAGA 4 BP041 — Agent Plugins Loader
 // Watches ~/.lb_substrate/plugins/agents/*.json for community plugin manifests.
-// SSPL Blood Rule: all plugins distributed for Mnemosyne carry SSPL umbrella.
-// Higher Standards Class: third-party plugin authors held to SSPL + cooperative-class.
+// License (D-BP223-BM0-X030-105, Founder k/03d1dd20 "plugins use new license, all"): every plugin
+// distributed for Mnemosyne is licensed under the Mnemosyne Cooperative Source License 2.0
+// (LicenseRef-MCSL-2.0, LICENSE.md). Commercial Use of a plugin needs the Cooperative Endorsement
+// Commercial License (COMMERCIAL_LICENSE.md). SSPL-1.0 was retired from 0.9.31 forward.
 // IP Ledger: member-developed plugins attributed via plugin manifest `ipLedgerRef` field.
 //
 // Plugin spec (JSON manifest):
@@ -12,14 +14,14 @@
 //     icon: string;
 //     tiers?: Array<{id, label, tierClass, modelId}>;
 //     requiresKey?: string;         env var name
-//     licenseType: 'SSPL-1.0';      REQUIRED — rejected if absent or wrong
+//     licenseType: 'LicenseRef-MCSL-2.0'; REQUIRED — rejected if absent or wrong
 //     ipLedgerRef?: string;         IP Ledger innovation ID (e.g. "IL-0042")
 //     authorHandle?: string;        Discord/GitHub handle
 //     schemaVersion: 1;
 //   }
 //
 // Distribution paths:
-//   Path A — Commercial AI company: SSPL fork of Mnemosyne with integration
+//   Path A — Commercial AI company: integration under a signed Commercial License (COMMERCIAL_LICENSE.md)
 //   Path B — Member developer: JSON manifest + plugin index on Discord/GitHub
 //   Path C — LB blessed: reviewed + ships in default Mnemosyne build
 
@@ -57,7 +59,7 @@ export interface InConjunctionAgent {
 const SUBSTRATE_ROOT = process.env.LB_SUBSTRATE_ROOT ?? join(homedir(), '.lb_substrate');
 const PLUGIN_DIR = join(SUBSTRATE_ROOT, 'plugins', 'agents');
 const SCHEMA_VERSION = 1;
-const REQUIRED_LICENSE = 'SSPL-1.0';
+const REQUIRED_LICENSE = 'LicenseRef-MCSL-2.0';
 
 // IDs reserved for builtins — plugin loader rejects any manifest claiming these
 const RESERVED_IDS = new Set([
@@ -130,7 +132,7 @@ function validateManifest(raw: unknown, filename: string): ValidationResult {
   if (m.licenseType !== REQUIRED_LICENSE) {
     return {
       ok: false,
-      reason: `${filename}: licenseType must be "${REQUIRED_LICENSE}" — SSPL umbrella is non-negotiable per Mnemosyne Blood Rule`,
+      reason: `${filename}: licenseType must be "${REQUIRED_LICENSE}" (Mnemosyne Cooperative Source License 2.0, LICENSE.md); SSPL-1.0 is retired`,
     };
   }
   if (m.tiers !== undefined) {
@@ -219,11 +221,20 @@ function notifyChange(): void {
  * Also writes a README if the directory is newly created.
  */
 export function ensurePluginDir(): void {
+  const readmePath = join(PLUGIN_DIR, 'README.txt');
   if (!existsSync(PLUGIN_DIR)) {
     mkdirSync(PLUGIN_DIR, { recursive: true });
     // Drop a README for member developers
-    const readmePath = join(PLUGIN_DIR, 'README.txt');
     writePluginReadme(readmePath);
+    return;
+  }
+  // X030-105: a README written by an earlier build names the retired SSPL-1.0 license; refresh it.
+  try {
+    if (existsSync(readmePath) && readFileSync(readmePath, 'utf-8').includes('SSPL-1.0')) {
+      writePluginReadme(readmePath);
+    }
+  } catch {
+    // Non-fatal
   }
 }
 
@@ -240,7 +251,8 @@ function writePluginReadme(path: string): void {
     '  displayName: "My Agent"',
     '  subtitle: "Helena-pedagogy one-liner"',
     '  icon: single emoji',
-    '  licenseType: "SSPL-1.0"   ← required; SSPL umbrella is non-negotiable',
+    '  licenseType: "LicenseRef-MCSL-2.0"   ← required: Mnemosyne Cooperative Source License 2.0 (LICENSE.md)',
+    '  Commercial Use of a plugin needs the Cooperative Endorsement Commercial License (COMMERCIAL_LICENSE.md).',
     '',
     'Optional fields:',
     '  tiers: [{id, label, tierClass, modelId}]',

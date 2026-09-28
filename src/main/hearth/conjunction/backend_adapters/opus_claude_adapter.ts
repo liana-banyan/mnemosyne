@@ -9,6 +9,9 @@
 // Status 'error' (not 'done') when all retries exhausted without substantive content.
 
 import type { AdapterReceipt } from '../types';
+// D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: OPUS_MODEL now reads
+// config/model_roster.json's 'brain.opus' role instead of carrying its own literal.
+import { getRosterModelId } from '../../../model_roster';
 
 // ─── Layer 3: retry helpers ───────────────────────────────────────────────────
 
@@ -26,7 +29,7 @@ async function sleep(ms: number): Promise<void> {
 }
 
 const ANTHROPIC_API_BASE = 'https://api.anthropic.com/v1';
-const OPUS_MODEL = 'claude-opus-4-7';
+const OPUS_MODEL = getRosterModelId('brain.opus');
 const DEFAULT_MAX_TOKENS = 4096;
 
 export async function opusClaudeAvailable(): Promise<{ ok: boolean; degraded_reason?: string }> {

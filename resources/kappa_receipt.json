@@ -1,0 +1,26 @@
+{
+  "_rule66": "New resource, written by D-BP223-BM0-X010-020-KAPPA. Never hand-edit -- regenerate via BISHOP_DROPZONE\\D-BP223-BM0-X010-020-KAPPA\\compute_kappa.js against BISHOP_DROPZONE\\D-BP165-M0-019_MMLU_PRO_SWEEP checkpoint artifacts, then copy the primary result here.",
+  "claimAudited": "ProofAccordion.tsx TrophyBody, \"BP074 Sound Barrier -- Cohen's Kappa 1.000 Trophy\", label \"Cohen's Kappa\" value \"1.000\", subtext \"Perfect agreement between AI and human judgment across 75 benchmark questions.\"",
+  "auditFinding": "No dataset matching that description (75 items, AI-verdict vs human-judgment labels) was found anywhere under LianaBanyanPlatform or mnemosyne. Flagged as fabricated/unfounded by BM0/X009 (outbox #775, 2026-09-09 17:31 Central) and independently re-verified live by SEG D-BP223-BM0-X010-019 (2026-09-10). No Founder ruling of PULL/LEAVE/AUDIT was found prior to the 2026-09-10 13:58 Central order to measure it for real.",
+  "measured": true,
+  "measuredUtc": "2026-09-10T19:08:39.322Z",
+  "method": "Cohen's kappa (unweighted), binary reading: rater = whether that item's verdict was correct. Two raters are the plow's A_cold (no substrate-method injection) pass and its B_warm_single_pass (with substrate-method injection) pass over the SAME MMLU-Pro question ids, matched by questionId. This is the one Cohen's-kappa methodology already established in this codebase (librarian-mcp/r10_cross_vendor/results/kappa_analysis_BP067.json computes the same correct/incorrect-agreement kappa between model pairs). It is NOT the original AI-vs-human-judgment claim on the trophy -- no such dataset exists on disk -- so this is reported as a substitute real measurement, not a recovery of the original number.",
+  "primary": {
+    "label": "run300: A_cold (no method) vs B_warm_single_pass (with method), matched by questionId",
+    "n": 300,
+    "kappa": 0.7662,
+    "ci95": [0.6934, 0.8390],
+    "table": { "bothCorrect": 126, "bothIncorrect": 139, "aCorrectBWrong": 17, "aWrongBCorrect": 18 },
+    "sourceFiles": [
+      "BISHOP_DROPZONE\\D-BP165-M0-019_MMLU_PRO_SWEEP\\run300_armA.checkpoint.jsonl",
+      "BISHOP_DROPZONE\\D-BP165-M0-019_MMLU_PRO_SWEEP\\run300_armB.checkpoint.jsonl"
+    ]
+  },
+  "corroboration": [
+    { "label": "run121 armA vs armB", "n": 121, "kappa": 0.6732, "ci95": [0.5424, 0.8041] },
+    { "label": "run100 A_cold vs B_warm", "n": 100, "kappa": 0.6790, "ci95": [0.5348, 0.8231] }
+  ],
+  "letterReadingNote": "A second, stricter reading (full-category kappa on the exact answer letter chosen, not just correct/incorrect) gives kappa=0.658 (n=300, 95% CI 0.599-0.716), 0.662 (n=121), 0.624 (n=100) -- consistent with the binary reading, i.e. still well below 1.000 either way.",
+  "fullReceiptPath": "BISHOP_DROPZONE\\D-BP223-BM0-X010-020-KAPPA\\kappa_receipt.json",
+  "reportPath": "BISHOP_DROPZONE\\D-BP223-BM0-X010-020-KAPPA_REPORT.md"
+}

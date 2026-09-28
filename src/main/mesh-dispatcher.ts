@@ -64,7 +64,9 @@ function getSupabaseClient() {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { getAnonKey, getSupabaseUrl } = require('./shared/anon_key') as typeof import('./shared/anon_key');
   const url = getSupabaseUrl();
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || getAnonKey();
+  // D-BP223-BM0-X037-009b: no service-role branch in client code. HARDWIRE-03 standing
+  // refusal: no client install can safely hold that key.
+  const key = getAnonKey();
   if (!url || !key) throw new Error('[mesh-dispatcher] Supabase env vars not set');
   return createClient(url, key, {
     auth: { persistSession: false },

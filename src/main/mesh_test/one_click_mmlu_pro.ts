@@ -675,6 +675,10 @@ async function answerQuestionLocallyViaPlow(
     effectivePrompt,
     researchQuery: q.question,
     domain: q.category,
+    // D-BP223-M0-BROWSER_REFUSAL_WIRED: browser_authority_types.ts's decideBrowserLookupRefusal
+    // doc comment item 3 -- this file's own benchmark corpus is MMLU-Pro, so this is the literal
+    // corpus id, not derived from q.category (that is a SUBJECT within the corpus, e.g. "law").
+    benchmarkCorpusId: 'MMLU-Pro',
     ollamaBaseUrl,
     model,
     choiceCount: q.options.length,

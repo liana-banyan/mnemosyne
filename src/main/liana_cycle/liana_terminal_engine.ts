@@ -236,6 +236,133 @@ import './methods/withheld_curve_shift_guard';
 // gap. See set_equivalence_match.ts header for the full HARDWIRE-22 analysis.
 import './methods/set_equivalence_match';
 
+// D-BP221-BM0-106. THE FIRST OF THE ITEM-10 HARVESTED METHODS TO BE FILED. Founder order,
+// 2026-09-06: get those methods filed and working so we can get the legs of Big Kahuna done.
+// It arrives QUARANTINED (`quarantined: true` in its own file), so selectMethod() and
+// selectEligibleMethods() will not choose it and NO live run changes behaviour today. Importing
+// it is what makes registerMethod() execute at all -- without this line the file compiles, ships
+// in dist, and registers nothing, which is this estate's own 'built, proven, and not connected'
+// failure (PAPER 009) written as an omission.
+import './methods/rate_distance_unit_pace';
+
+// D-BP221-BM06-003. THE SECOND OF THE ITEM-10 HARVESTED METHODS, and the first adapted by BM06 on
+// the XO's order (D-BP221-BM0-118): "adapt the remaining 6 item-10 methods to the registry
+// interface, one at a time. NEVER cast, annotate." Its behavior core is byte-identical to the
+// candidate accept_gates.cjs judged ACCEPT -- only the interface layer changed, so the ACCEPT still
+// describes this file. QUARANTINED, so selectMethod() and selectEligibleMethods() will not choose
+// it and NO live run changes behaviour today. This import line is what makes registerMethod()
+// execute at all: without it the file compiles, ships in dist, and registers nothing -- PAPER 009's
+// 'built, proven, and not connected' failure written as an omission.
+import './methods/multi_step_multiplication_chain';
+
+// D-BP221-BM06-006. THIRD ITEM-10 METHOD FILED, second adapted by BM06. Behavior core byte-identical
+// to the candidate the accept runner passed; only the interface layer changed, so that ACCEPT still
+// describes the file. QUARANTINED, so no live run changes behaviour. Without this import line the
+// file compiles, ships in dist, and registers NOTHING -- which is not hypothetical here: dist held an
+// orphaned hollow_box_wall_thickness_volume.js from 23:48:10Z, compiled from the reverted source,
+// imported by nobody. See BISHOP_DROPZONE\D-BP221-BM06-TOOLS\verify_methods_in_dist.mjs.
+import './methods/hollow_box_wall_thickness_volume';
+
+// D-BP221-BM06-007. FOURTH ITEM-10 METHOD FILED. This candidate already carried a `: LianaMethod`
+// annotation against a LOCAL interface of that name it declared itself, so it typechecked, satisfied a
+// grep, and conformed to nothing. Now annotated against the real registry types. QUARANTINED.
+import './methods/rate_times_duration_minus_loss';
+
+// D-BP221-BM06-008 and -009. FIFTH AND SIXTH ITEM-10 METHODS FILED. Both had their own local
+// interfaces and no annotation; both now check against the real registry types. Both already round
+// to cents internally because their answers are money, so no rounding convention was layered on top.
+// QUARANTINED. Without these two lines they would sit in dist registering nothing, which is exactly
+// what their reverted predecessors were doing at 23:48:10Z.
+import './methods/per_unit_discount_rebate_subtraction';
+import './methods/percentage_markup_resale_profit';
+
+// D-BP221-BM06-010. SEVENTH AND LAST ITEM-10 METHOD FILED, completing the six the XO handed to BM06
+// plus its own first. This candidate was the closest to conforming of the six: its local outcome type
+// already had the registry's exact fields, and it still had to be adapted, because a hand-copied
+// contract cannot fail when the real one changes -- it just quietly stops matching. QUARANTINED.
+import './methods/seq_multiplier_then_percent_adjust_total';
+
+// D-BP223-M0-h2cbpqmc-011: BATCH 1 OF THE REMAINING METHOD-FACTORY CANDIDATES, one method per
+// de-duplicated silo cluster, gated in the Founder's promoted order (gate 1 then 2a then 4) and
+// then the perturbation gate (2b: baseline + 3 perturbations, all TRACK). See
+// BISHOP_DROPZONE\D-BP223-M0-h2cbpqmc-010_PROMOTION_BATCH_1_FIVE_CLUSTERS.md for every verdict.
+// Each candidate declared its own local LianaQuestionInput/ShapeTestResult/RunResult and left its
+// exported object unannotated -- the same disguise already found in the earlier seven item-10
+// methods -- so each is re-annotated here against the real LianaMethod/MethodQuestionInput types,
+// behavior core byte-for-byte unchanged. ALL FIVE ARRIVE QUARANTINED: selectMethod() and
+// selectEligibleMethods() will not choose any of them and no live run changes behaviour today.
+// Un-quarantining is a separate, later Founder decision made per batch after held-out
+// measurement -- this dispatch only registers. Without these five import lines the files
+// compile, ship in dist, and register nothing, which is PAPER 009's 'built, proven, and not
+// connected' failure written as an omission.
+import './methods/sum_of_independent_rate_count_products';
+import './methods/sum_parts_then_multiply_by_rate';
+import './methods/total_minus_known_parts_backsolve';
+import './methods/base_plus_fraction_multiple_then_sum';
+import './methods/two_actor_relative_subcategory_totals';
+// D-BP223-BM04-h2cbpv9w-170: BATCH 2 OF THE REMAINING METHOD-FACTORY CANDIDATES, three ACCEPT
+// methods surviving gate 1, gate 2a, gate 4 (D-BP223-M0-h2cbpoxk-035) and gate 5's sibling
+// interception against the real ASDiv-150 + GSM8K-1319 corpora (D-BP223-M0-h2cbpc0g-043). The
+// other four batch-2 candidates (simple-sum-of-given-quantities-v1, single-multiply-two-given-
+// values-v1, subtract-two-given-values-v1, sum-then-compare-to-threshold-boolean-v1) are MAPPED
+// DEAD ENDS (manifest.json dead_end: true) and are NOT registered. Each candidate declared its own
+// local LianaQuestionInput/ShapeTestResult/RunResult and left its exported object unannotated --
+// the same disguise found in the earlier seven item-10 methods and in batch 1 -- so each is
+// re-annotated here against the real LianaMethod/MethodQuestionInput types, behavior core
+// byte-for-byte unchanged. ALL THREE ARRIVE QUARANTINED: selectMethod() and
+// selectEligibleMethods() will not choose any of them and no live run changes behaviour today.
+// Un-quarantining is a separate, later Founder decision made per batch after held-out
+// measurement -- this dispatch only stages for registration. Without these three import lines the
+// files compile, ship in dist, and register nothing, which is PAPER 009's 'built, proven, and not
+// connected' failure written as an omission.
+import './methods/conditional_compare_then_add_or_subtract';
+import './methods/convert_add_convert_mixed_unit_time_sum';
+import './methods/two_sums_of_products_compared_for_greater';
+// D-BP223-BM04-h2cbpv9w-170 REGISTRAR R01: 20 OF 22 METHOD-FACTORY GENERATION-WAVE CANDIDATES
+// (waves W01/W02/W04, per BISHOP_DROPZONE\D-BP223-BM04-h2cbpv9w-170_WAVE_PROTOCOL.md), surviving
+// the full gate chain -- gate 1, gate 2a, gate 4, gate 5 (D-BP221-BM04-TOOLS\accept_gates.cjs) --
+// PLUS the perturbation gate 2b (HARDWIRE\tools\controls\perturbation_gate.mjs, baseline + 3
+// perturbations per candidate, oracle hand-derived from the English of each representative GSM8K
+// question, never from the candidate's own source). The other 2 of the 22 are MAPPED DEAD ENDS
+// (manifest.json dead_end: true) and are NOT registered: fraction-derive-then-subtract-
+// difference-v1 (gate 2a REFUSE, answer-numeral-in-code -- its number-word table's own
+// "hundred: 100" literal coincidentally equals this candidate's correct answer) and iterative-
+// divide-by-rate-until-exhausted-sum-v1 (gate 2b REFUSE at perturb-3, BUY=7/RATE=2 -- returned 11
+// where the independently-recomputed truth is 13; accept_gates.cjs alone would ACCEPT this one,
+// but REGISTRAR R01 treats a gate-2b FAIL as disqualifying too, per the Founder's own BP223 ruling
+// naming perturbation "the Frenzy's commit gate" -- flagged for the Founder to ratify or overrule
+// this extension of accept_gates.cjs's own ACCEPT criterion). Full per-candidate table in
+// BISHOP_DROPZONE\D-BP223-BM04-h2cbpv9w-170_REGISTRAR_R01.md. Each candidate declared its own
+// local LianaQuestionInput/ShapeTestResult/RunResult and left its exported object unannotated --
+// the same disguise found in the earlier seven item-10 methods, batch 1 and batch 2 -- so each is
+// re-annotated here against the real LianaMethod/MethodQuestionInput types, behavior core
+// byte-for-byte unchanged (proved by programmatic containment check, not merely asserted). ALL 20
+// ARRIVE QUARANTINED: selectMethod() and selectEligibleMethods() will not choose any of them and
+// no live run changes behaviour today. Un-quarantining is a separate, later Founder decision made
+// per batch after held-out measurement -- this dispatch only registers. Without these 20 import
+// lines the files compile, ship in dist, and register nothing, which is PAPER 009's 'built,
+// proven, and not connected' failure written as an omission.
+import './methods/comparison_via_hidden_base_divide_then_multiply';
+import './methods/algebra_difference_equals_twice_total_then_halve';
+import './methods/cost_chain_three_items_via_relationship_then_sum';
+import './methods/average_of_two_derived_costs_then_sum';
+import './methods/gross_minus_percentage_fees_and_debt';
+import './methods/cumulative_additive_stack_with_one_percentage_term';
+import './methods/two_direct_quantities_plus_two_multiply_groups_sum';
+import './methods/three_phase_daily_delta_cascade_sum';
+import './methods/subtract_two_fraction_of_total_removals';
+import './methods/sum_of_items_times_number_of_readers';
+import './methods/chain_subtract_then_multiplies_then_time_convert';
+import './methods/chained_additive_offset_three_terms_sum';
+import './methods/two_variable_age_multiple_future_ratio_solve';
+import './methods/derive_unit_value_then_sum_two_products';
+import './methods/quad_factor_mileage_plus_separate_bonus_chain';
+import './methods/flat_rate_per_period_interest_total_owed';
+import './methods/age_multiple_then_project_forward';
+import './methods/ratio_chain_backsolve_no_sum';
+import './methods/two_actor_percent_offset_then_matched_raise_sum';
+import './methods/time_based_revenue_minus_cost_profit';
+
 // D-BP213-XO-64 LEG 3: dataset question_id 5152 (internal qid 92), "REGISTER inside a named
 // school." Trigger (attribution-operator + label) fires broadly and blind-re-tests correctly on a
 // held-out question (question_id 5065, "The Federalist Papers"); the RESOLUTION half still
@@ -255,6 +382,250 @@ import './methods/umbrella_or_school_check';
 // not used. See convention_locked_recompute.ts header for the full account and D-BP213-XO-56_LEG4.md
 // (BISHOP_DROPZONE) for the proof.
 import './methods/convention_locked_recompute';
+
+// D-BP223-BM04-h2cbpv9w-170 -- METHOD FACTORY REGISTRAR RUN R02, 55 of 56 wave candidates
+// registered quarantined (waves W03, W05, W06, W07, W08, W09, W10; 1 of 56,
+// salary-two-fraction-deductions-half-donation-then-flat-gifts-v1, REFUSED at gate 2b --
+// mapped dead end, never registered, see D-BP221-BM04-TOOLS/registrar_r02_dead_end_detail.json).
+// Full per-method gate 1/2a/4/5 (accept_gates.cjs) and gate 2b (perturbation_gate.mjs, baseline
+// + 3 perturbations, hand-derived oracles) receipts: BISHOP_DROPZONE\
+// D-BP223-BM04-h2cbpv9w-170_REGISTRAR_R02.md. quarantined: true on all 55 -- selectMethod() and
+// selectEligibleMethods() cannot choose any of them; registering changes no live run.
+import './methods/age_substitution_chain_single_unknown';
+import './methods/average_of_future_ages';
+import './methods/mixed_subtract_add_algebra_solve_unknown_transfer';
+import './methods/fraction_derive_then_compare_to_base';
+import './methods/running_balance_add_then_subtract';
+import './methods/nested_multiply_two_branches_combined';
+import './methods/add_subtotals_then_double_multiply';
+import './methods/compute_total_backsolve_difference_then_divide';
+import './methods/breakeven_years_investment_vs_recurring_profit';
+import './methods/three_day_mileage_multiplier_backsolve_third_day';
+import './methods/sum_items_plus_percent_fee_plus_flat_tip';
+import './methods/linear_offset_times_base_count';
+import './methods/three_tier_ratio_chain_sum_to_total';
+import './methods/sum_items_with_conditional_nonfood_tax';
+import './methods/clients_times_supplies_cost_minus_income_profit';
+import './methods/bee_multi_phase_tracking_final_return';
+import './methods/two_actor_distance_rate_time_difference';
+import './methods/vehicle_tire_inflation_charge';
+import './methods/multi_item_length_sum_with_unit_conversion';
+import './methods/two_option_percent_profit_choose_max';
+import './methods/base_plus_delta_then_fraction_multiplier';
+import './methods/flat_periodic_fixed_increase_total_cost';
+import './methods/multi_item_cost_with_derived_price_relationship_sum';
+import './methods/budget_minus_listed_costs_remainder';
+import './methods/age_multiple_sum_in_n_years_then_report_current';
+import './methods/linear_relation_fixed_value_then_derive_other';
+import './methods/per_unit_two_step_task_time_times_quantity';
+import './methods/gallons_produced_backsolve_from_profit_then_ingredient_cost';
+import './methods/sum_of_weekly_hours_times_flat_hourly_rate';
+import './methods/two_role_weekly_pay_summed_then_annualized';
+import './methods/die_probability_percentage_point_gap';
+import './methods/convert_weekly_rate_to_daily_total';
+import './methods/split_total_evenly_two_parties_rate_multiple';
+import './methods/target_average_speed_remaining_segment';
+import './methods/two_tank_leak_ratio_backsolve';
+import './methods/two_activity_rate_times_count_sum';
+import './methods/subtract_then_multiply_then_add_remaining';
+import './methods/offset_then_day_two_multiplier';
+import './methods/two_hop_multiple_chain_difference';
+import './methods/total_minus_recurring_daily_usage_and_extra';
+import './methods/rate_chain_multiply_then_percentage_discount';
+import './methods/two_day_multiplier_difference_times_unit_rate';
+import './methods/base_times_multiplier_plus_increment';
+import './methods/chained_percent_decrease_then_multiply_third_actor';
+import './methods/mixed_coin_denominations_plus_flat_dollar_sum';
+import './methods/half_base_then_double_plus_offset_difference';
+import './methods/base_price_plus_two_percentage_fees_minus_budget';
+import './methods/multi_step_time_heat_then_cook_with_percent_and_offset';
+import './methods/three_part_bag_sum_with_offset_and_half';
+import './methods/sum_of_priced_items_subtracted_from_payment_change';
+import './methods/sum_of_two_ages_projected_n_years_forward';
+import './methods/daily_unit_usage_cartons_needed_times_cost_per_carton';
+import './methods/twice_attribute_two_species_half_combined_total';
+import './methods/fill_remaining_length_with_fractional_beads_count';
+import './methods/three_writers_double_second_week_total';
+// ---- D-BP223-BM04-h2cbpv9w-170 REGISTRAR RUN R03 -- 34 new methods (waves W11-W15) ----
+// Registered quarantined:true. gate 1/2a/4/5 ACCEPT, gate 2b (perturbation) TRACK on all
+// trials. See BISHOP_DROPZONE\D-BP223-BM04-h2cbpv9w-170_REGISTRAR_R03.md.
+import './methods/coin_denomination_sum_minus_purchase_cents';
+import './methods/second_actor_rate_multiple_then_time_for_distance';
+import './methods/total_minus_fixed_group_share_then_divide_remainder';
+import './methods/per_meal_rate_times_people_times_meals_then_supply_duration';
+import './methods/sum_achieved_periods_then_subtract_from_target_shortfall';
+import './methods/opening_bid_plus_double_increment_per_other_bidder';
+import './methods/purchase_plus_repair_then_percent_appreciation_on_purchase_profit';
+import './methods/sum_and_difference_two_parts_solve_larger';
+import './methods/multi_step_percent_increase_two_period_sum';
+import './methods/inventory_reverse_solve_remaining_stock';
+import './methods/relative_rate_chain_anchor_then_split_time_distance';
+import './methods/three_actor_multiple_chain_forward_solve';
+import './methods/per_unit_material_yield_then_revenue_minus_cost_profit';
+import './methods/proportional_count_and_percent_markup_total_spend';
+import './methods/daily_production_rate_dozen_price_weekly_revenue';
+import './methods/outbound_elapsed_time_distance_then_return_time';
+import './methods/bridge_capacity_minus_overhead_divided_by_unit_weight_floor';
+import './methods/alternating_full_and_discount_unit_price_sum';
+import './methods/two_costs_summed_plus_percentage_of_sum';
+import './methods/years_over_threshold_times_rate_of_base_value';
+import './methods/half_year_full_rate_half_year_discounted_rate_annual_sum';
+import './methods/distance_per_fuel_used_rate_times_tank_capacity';
+import './methods/chain_subtract_then_double_then_sum_three_categories';
+import './methods/total_cost_plus_percentage_interest_divided_by_months';
+import './methods/gift_minus_purchases_plus_extra_gift';
+import './methods/given_total_plus_derived_addition_minus_removal';
+import './methods/sum_of_priced_items_total';
+import './methods/unit_rate_times_quantity_purchase';
+import './methods/remainder_after_spending_chain';
+import './methods/ratio_multiple_then_combined_or_solo_total';
+import './methods/literal_percent_of_stated_base';
+import './methods/average_of_explicit_value_list';
+import './methods/two_item_category_spend_difference';
+import './methods/stated_age_projected_n_years';
+
+// D-BP223-BM04-h2cbpv9w-170 REGISTRAR R04 -- 39 new methods (waves W16-W20, 40 candidates
+// merged, 1 dead end: multiple-then-half-chain-compare-to-base-v1, gate 2a false positive
+// on the estate-wide -v1 id suffix, flagged for the Founder, never registered).
+import './methods/round_then_sum_of_price_times_quantity';
+import './methods/geometric_halving_levels_average_from_top';
+import './methods/original_price_minus_percentage_discount';
+import './methods/offset_multiple_of_base_then_sum_two_actors';
+import './methods/two_part_total_with_known_difference_solve_for_one';
+import './methods/ratio_multiple_sum_to_total_solve_smaller';
+import './methods/relative_age_chain_substitution_from_anchor';
+import './methods/per_unit_count_times_units_plus_received_minus_given';
+import './methods/hourly_wage_overtime_premium_weekly_earnings';
+import './methods/two_prior_days_sum_times_target_day_multiplier';
+import './methods/total_units_divided_by_per_sheet_yield';
+import './methods/starting_total_minus_fraction_minus_flat_extra_remainder';
+import './methods/three_year_book_sales_ratio_backsolve_second_year_revenue';
+import './methods/weekly_wage_plus_flat_bonus_times_weeks_in_month';
+import './methods/cross_actor_per_week_rate_equal_target_time';
+import './methods/two_independent_growth_intervals_summed_over_period';
+import './methods/initial_budget_minus_itemized_purchases_and_savings_reserve';
+import './methods/two_subgroup_daily_rate_sum_times_week';
+import './methods/three_actor_age_chain_older_then_younger_backsolve';
+import './methods/past_age_ratio_then_quantity_ratio_scale_to_present';
+import './methods/total_split_into_three_ratio_groups_solve_base';
+import './methods/two_group_sum_minus_absolute_and_fractional_exclusions';
+import './methods/base_plus_bought_plus_fraction_of_bought_then_unit_weight';
+import './methods/rectangular_volume_times_unit_cost_rate';
+import './methods/two_quantity_ratio_scale_from_given_total';
+import './methods/initial_two_group_total_fraction_leaves_then_subgroup_backsolve';
+import './methods/fraction_of_base_then_delta_final_item_value';
+import './methods/box_capacity_then_combined_total_divided';
+import './methods/unit_count_from_rate_then_secondary_rate_plus_addend';
+import './methods/exchange_rate_scale_new_total_to_old_total';
+import './methods/sequential_signed_boarding_changes_backsolve_initial_value';
+import './methods/sequential_consumption_and_giveaway_multiple_repurchase_final_total';
+import './methods/gain_then_give_away_remaining_count';
+import './methods/loyalty_reward_plus_doubled_coupon_subtracted_from_spend';
+import './methods/hourly_flat_tax_vs_salary_property_then_tax_net_pay_gap';
+import './methods/total_times_percentage_then_half_of_that_subgroup';
+import './methods/advance_plus_installments_two_offer_cost_difference';
+import './methods/shares_value_percent_increase_then_percent_decrease';
+import './methods/total_split_two_equal_plus_smaller_offset_group_backsolve';
+// D-BP223-BM04-h2cbp9d8-171 -- REGISTRAR R05 import block (25 methods: 24 new from waves
+// W21-W23 + 1 revived W20 dead end, C190, cleared by the gate2_answer_carry.cjs letter-
+// boundary fix). ARRIVE QUARANTINED: selectMethod()/selectEligibleMethods() will not choose any of them.
+import './methods/ratio_split_total_then_per_category_legs_sum';
+import './methods/weekly_increment_then_drop_count_remaining';
+import './methods/weight_equivalence_chain_plus_container_sum';
+import './methods/fraction_increase_daily_rate_then_multiply_days';
+import './methods/weekly_plus_two_monthly_recurring_costs_times_year';
+import './methods/five_day_activity_durations_with_multiple_and_half_sum';
+import './methods/two_request_groups_plus_multiple_minus_prebought_stock';
+import './methods/activity_subset_percent_backsolve_total_then_other_percent';
+import './methods/base_plus_offset_then_multiple_of_combined_total';
+import './methods/flat_plus_metered_per_person_cost_budget_minus_host';
+import './methods/daily_income_minus_purchase_cost_times_days_savings';
+import './methods/half_of_change_backsolve_remaining_purchase_quantity';
+import './methods/known_value_equals_multiple_of_unknown_minus_offset_solve';
+import './methods/three_leg_circuit_third_leg_offset_then_rate_divide_total';
+import './methods/average_of_two_stated_then_weighted_sum_of_two_groups';
+import './methods/two_leg_trip_detour_plus_return_different_speeds_total_time';
+import './methods/subgroup_total_then_absence_remainder_for_other_subgroup';
+import './methods/base_count_plus_stated_multiple_of_base_total_in_place';
+import './methods/three_category_multiply_offset_chain_total_minus_known_other_reasons';
+import './methods/multiple_more_than_base_then_subtract_recent_gain_before_value';
+import './methods/headcount_item_with_percentage_etch_plus_two_subgroup_extras_total_spend';
+import './methods/market_price_minus_diy_percentage_savings_total_cost';
+import './methods/three_day_sale_multiply_chain_minus_returns_total_sold';
+import './methods/total_split_evenly_two_different_per_unit_rates_daily_yield';
+import './methods/multiple_then_half_chain_compare_to_base';
+// D-BP223-BM04-h2cbp9d8-171 -- REGISTRAR R06 import block (16 methods: 8 from wave W24,
+// 8 from wave W25). ARRIVE QUARANTINED: selectMethod()/selectEligibleMethods() will not choose any of them.
+import './methods/mrs_sherman_bread_rolls_broken_into_pieces_for_chickens';
+import './methods/half_then_fraction_of_remainder_color_preference';
+import './methods/unit_price_revenue_backsolve_plus_doubling_day_chain_total_picked';
+import './methods/total_minus_pairs_and_loose_items_washed_missed';
+import './methods/bought_plus_given_minus_eaten_items_left';
+import './methods/principal_plus_flat_interest_divided_by_months_payment';
+import './methods/two_hikers_rate_times_time_distance_difference';
+import './methods/base_pair_plus_multiplier_and_flat_offset_friend_total_pesos';
+import './methods/production_cost_then_profit_per_sales_hour';
+import './methods/fraction_sold_known_remainder_backsolve_original';
+import './methods/percent_subset_halved_by_absence_plus_flat_joiners';
+import './methods/average_of_listed_scores_stated_separately';
+import './methods/flat_bracelet_vs_per_ride_tickets_savings';
+import './methods/sum_of_labeled_subgroups_then_divide_shared_resource';
+import './methods/ratio_share_difference_from_known_total';
+import './methods/single_plus_bundled_pair_discount_vs_flat_package_savings';
+// D-BP223-BM04-h2cbp9d8-171 REGISTRAR R08 -- 16 new methods (W28+W29, clusters C248-C263),
+// all quarantined:true. See BISHOP_DROPZONE\D-BP223-BM04-h2cbp9d8-171_REGISTRAR_R08.md.
+import './methods/guarantee_percent_then_subset_percent_defect_product';
+import './methods/item_count_times_price_percent_off_total';
+import './methods/two_actor_orchard_category_ratios_backsolve_third_category';
+import './methods/two_species_heads_and_bumps_system_solve';
+import './methods/multi_leg_trip_percent_of_leg_plus_weekly_rate_total';
+import './methods/three_actor_half_then_fraction_chain_backsolve';
+import './methods/two_elevations_minus_fall_distance_climb_difference';
+import './methods/count_minus_group_removal_then_fraction_of_remainder_leaves';
+import './methods/three_tier_monthly_rate_then_yearly_total_cost';
+import './methods/base_price_fraction_of_savings_split_then_original_price_difference';
+import './methods/multi_vehicle_count_times_capacity_sum_total';
+import './methods/two_source_count_base_rate_plus_bonus_rate_subset_daily_total';
+import './methods/base_item_plus_percent_more_item_plus_half_item_dinner_total';
+import './methods/fixed_cost_plus_cash_revenue_divided_by_price_then_scaled_by_sold_fraction';
+import './methods/half_plus_one_supply_then_double_demand_shortfall';
+import './methods/name_letter_count_plus_half_of_base_plus_offset_total';
+// D-BP223-BM04-h2cbp9d8-171 -- REGISTRAR R07 import block (16 methods: 8 from wave W26,
+// 8 from wave W27). ARRIVE QUARANTINED: selectMethod()/selectEligibleMethods() will not choose any of them.
+import './methods/grid_capacity_double_plus_flat_offset';
+import './methods/split_whole_by_two_fractions_then_flat_consumed_remainder';
+import './methods/initial_savings_plus_daily_rate_days_to_reach_target';
+import './methods/base_fraction_then_twice_fraction_minus_offset_total';
+import './methods/three_actor_age_chain_older_than_difference';
+import './methods/unit_size_times_drink_count_times_rate_total';
+import './methods/weeks_days_daily_pay_to_annual_earnings';
+import './methods/scaled_recipe_two_ingredient_package_count_difference';
+import './methods/energy_reduction_savings_kilowatts';
+import './methods/repeated_value_plus_single_plus_half_of_single_average';
+import './methods/people_divided_by_serving_size_times_per_lb_ingredient_sum';
+import './methods/ratio_base_then_purchase_delta_combined_total';
+import './methods/goal_minus_remaining_minus_half_plus_flat_isolates_middle_activity';
+import './methods/pages_words_reading_rate_minus_travel_minutes_early';
+import './methods/base_plus_multiple_of_base_then_percent_discount_plus_flat_extra';
+import './methods/nightly_consumption_times_days_divided_by_batch_yield_dozens';
+// D-BP223-BM04-h2cbp9d8-171 REGISTRAR R09 -- 16 new methods (W30+W31, clusters C264-C279),
+// all quarantined:true. See BISHOP_DROPZONE\D-BP223-BM04-h2cbp9d8-171_REGISTRAR_R09.md.
+import './methods/multi_item_sum_then_percent_off_total';
+import './methods/three_actor_successor_fraction_or_multiple_chain';
+import './methods/divide_then_fraction_of_share_unit_converted';
+import './methods/starting_amount_percent_remaining_then_two_item_split_count';
+import './methods/subtract_kept_then_divide_among_named_friends';
+import './methods/divide_whole_into_pieces_then_subtract_eaten_remainder';
+import './methods/sum_two_actors_then_divide_by_group_plus_others';
+import './methods/doubled_quantity_cost_plus_flat_item_cost_per_serving_rounded';
+import './methods/actor_drive_time_multiplier_plus_early_arrival_lead';
+import './methods/rectangle_area_yard_length_convert_then_perimeter';
+import './methods/two_actor_two_color_pack_count_times_uniform_pack_size_difference';
+import './methods/three_leg_race_percent_faster_swim_plus_bike_offset_margin_backsolve_run';
+import './methods/three_movie_hours_offset_then_fraction_chain_length';
+import './methods/speed_time_distance_times_hay_rate_cost_then_change';
+import './methods/dozen_plus_loose_eggs_two_stage_division_trays';
+import './methods/two_venue_item_split_revenue_minus_cost_profit';
 
 // Re-exported so index.ts's existing closure (`(question) =>
 // runBrowserAuthorityQueryFromMain({...})`) keeps type-checking against exactly the same shape

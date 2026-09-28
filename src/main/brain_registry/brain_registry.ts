@@ -6,6 +6,12 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { app } from 'electron';
+// D-BP223-M0-h2cbpo68-MODEL_ROSTER/SEG-M0/BP223-MODEL_ROSTER: DEFAULT_BRAINS' two Anthropic
+// entries below now read their model_id/brain_id from config/model_roster.json instead of
+// carrying their own literal strings -- see model_roster.ts's header. Vendor model ids rotate by
+// iteration; keeping the id in exactly one place means a future rotation is a one-line JSON edit,
+// not a grep-and-replace across every file that used to duplicate the literal.
+import { getRosterModelId } from '../model_roster';
 
 export interface BrainEntry {
   brain_id: string;           // unique slug e.g. "claude-opus-4-7"
@@ -20,9 +26,9 @@ export interface BrainEntry {
 
 export const DEFAULT_BRAINS: BrainEntry[] = [
   {
-    brain_id: 'claude-opus-4-7',
+    brain_id: getRosterModelId('brain.opus'),
     vendor: 'anthropic',
-    model_id: 'claude-opus-4-7',
+    model_id: getRosterModelId('brain.opus'),
     kind: 'flagship',
     api_endpoint: 'https://api.anthropic.com',
     cost_per_1k_tokens: 0.015,
@@ -30,9 +36,9 @@ export const DEFAULT_BRAINS: BrainEntry[] = [
     status: 'available',
   },
   {
-    brain_id: 'claude-sonnet-4-6',
+    brain_id: getRosterModelId('brain.sonnet'),
     vendor: 'anthropic',
-    model_id: 'claude-sonnet-4-6',
+    model_id: getRosterModelId('brain.sonnet'),
     kind: 'flagship',
     api_endpoint: 'https://api.anthropic.com',
     cost_per_1k_tokens: 0.003,

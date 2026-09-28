@@ -1,7 +1,7 @@
 {
   "name": "amplify-computer",
-  "version": "0.9.28",
-  "description": "MnemosyneC - Cooperative AI Peer by Liana Banyan Corporation (SSPL)",
+  "version": "0.9.39",
+  "description": "MnemosyneC - Cooperative AI Peer by Liana Banyan Corporation (Mnemosyne Cooperative Source License 2.0)",
   "homepage": "https://lianabanyan.com",
   "private": true,
   "main": "dist/main/index.js",
@@ -15,7 +15,8 @@
     "typecheck:renderer": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.renderer.json --noEmit",
     "typecheck:main": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.main.json --noEmit",
     "typecheck": "npm run typecheck:renderer && npm run typecheck:main",
-    "build": "node scripts/unicode-check.mjs && node scripts/bundled_resources_preflight.mjs && npm run build:renderer && npm run build:main",
+    "build": "node scripts/unicode-check.mjs && node scripts/sync_license.mjs && node scripts/bundled_resources_preflight.mjs && npm run build:renderer && npm run build:main",
+    "license:sync": "node scripts/sync_license.mjs",
     "build:renderer": "vite build --config vite.renderer.config.ts",
     "build:main": "node scripts/guarded_tsc_main.cjs tsconfig.main.json",
     "build:hugo": "node scripts/copy-hugo-bundle.mjs",
@@ -42,7 +43,7 @@
     "email": "support@lianabanyan.com",
     "url": "https://lianabanyan.com"
   },
-  "license": "SSPL-1.0",
+  "license": "SEE LICENSE IN LICENSE.md",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
     "@google/generative-ai": "^0.24.1",
@@ -85,7 +86,7 @@
     "appId": "com.lianabanyan.mnemosyne",
     "productName": "MnemosyneC",
     "icon": "assets/app-icon",
-    "copyright": "Copyright 2026 Liana Banyan Corporation. All rights reserved. SSPL licensed.",
+    "copyright": "Copyright 2026 Liana Banyan Corporation. Mnemosyne Cooperative Source License 2.0 (LicenseRef-MCSL-2.0).",
     "asar": true,
     "asarUnpack": [
       "resources/ollama/**",
@@ -98,6 +99,7 @@
     "files": [
       "dist/**/*",
       "!dist/**/*.map",
+      "config/**/*",
       "assets/tray-icon.png",
       "assets/app-icon.ico",
       "assets/app-icon.png",
@@ -119,8 +121,20 @@
         "to": "README_INSTALL.txt"
       },
       {
-        "from": "LICENSE_SSPL.md",
-        "to": "LICENSE_SSPL.txt"
+        "from": "LICENSE.md",
+        "to": "LICENSE.txt"
+      },
+      {
+        "from": "COMMERCIAL_LICENSE.md",
+        "to": "COMMERCIAL_LICENSE.txt"
+      },
+      {
+        "from": "NETWORK_TERMS.md",
+        "to": "NETWORK_TERMS.txt"
+      },
+      {
+        "from": "LICENSE_FAQ.md",
+        "to": "LICENSE_FAQ.txt"
       }
     ],
     "extraResources": [
@@ -138,6 +152,14 @@
       {
         "from": "resources/liana_survey_queries.json",
         "to": "liana_survey_queries.json"
+      },
+      {
+        "from": "resources/kappa_receipt.json",
+        "to": "kappa_receipt.json"
+      },
+      {
+        "from": "resources/kappa_human_receipt.json",
+        "to": "kappa_human_receipt.json"
       },
       {
         "from": "resources/eblets_default",
@@ -194,7 +216,10 @@
       "signDlls": false,
       "signAndEditExecutable": true,
       "sign": "./scripts/sign.cjs",
-      "verifyUpdateCodeSignature": false
+      "verifyUpdateCodeSignature": true,
+      "publisherName": [
+        "Jonathan Jones"
+      ]
     },
     "nsis": {
       "artifactName": "MnemosyneC-Setup-${version}.${ext}",
@@ -283,7 +308,7 @@
       "category": "Office",
       "maintainer": "Liana Banyan Corporation <support@lianabanyan.com>",
       "synopsis": "MnemosyneC - Cooperative AI Peer. Mesh-native knowledge substrate for distributed cooperative intelligence.",
-      "description": "MnemosyneC - Cooperative AI Peer by Liana Banyan Corporation (SSPL)"
+      "description": "MnemosyneC - Cooperative AI Peer by Liana Banyan Corporation (Mnemosyne Cooperative Source License 2.0)"
     },
     "deb": {
       "packageCategory": "utils",
