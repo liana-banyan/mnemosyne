@@ -1326,11 +1326,9 @@ function startOverlayWatchdog(win: BrowserWindow): void {
 
 function applyLBFrameClickthrough(enabled: boolean): void {
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
-  if (enabled) {
-    overlayWindow.setIgnoreMouseEvents(true, { forward: true });
-  } else {
-    overlayWindow.setIgnoreMouseEvents(false);
-  }
+  // 0.9.41: mouse pass-through (setIgnoreMouseEvents with forward:true) is REMOVED; it sent every
+  // mouse move to the renderer and caused pointer stutter. No overlay window is shown any more.
+  void enabled;
   if (IS_DEV) {
     console.log(`[LB Frame] passthrough-ignore-mouse=${enabled}`);
   }
@@ -1407,8 +1405,8 @@ function createOverlayWindow(): void {
     x: overlayBounds.x,
     y: overlayBounds.y,
     frame: false,
-    transparent: true,
-    alwaysOnTop: true,
+    transparent: false, // 0.9.41: never an overlay
+    alwaysOnTop: false,
     resizable: false,
     skipTaskbar: true,
     hasShadow: false,
@@ -1553,10 +1551,9 @@ function rebuildTrayMenu(mode: FrameMode = currentMode): void {
       type: 'radio',
       checked: mode === 'ai_burst',
       click: () => {
-        // SAGA-1 BP055: Burst Mode is the opt-in path that also surfaces the overlay.
+        // 0.9.41 (Founder, 2026-09-28): the full-screen overlay is REMOVED (it caused mouse stutter).
+        // Burst Mode no longer surfaces any window.
         setMode('ai_burst');
-        if (!overlayWindow) createOverlayWindow();
-        overlayWindow?.showInactive();
       },
     },
     {
@@ -1611,18 +1608,7 @@ function rebuildTrayMenu(mode: FrameMode = currentMode): void {
       label: 'Open lianabanyan.com',
       click: () => shell.openExternal('https://lianabanyan.com'),
     },
-    { type: 'separator' },
-    {
-      label: 'Hide Overlay',
-      click: () => overlayWindow?.hide(),
-    },
-    {
-      label: 'Show Overlay',
-      click: () => {
-        if (!overlayWindow) createOverlayWindow();
-        overlayWindow?.showInactive();
-      },
-    },
+    // 0.9.41: "Hide Overlay" / "Show Overlay" removed with the overlay itself.
     { type: 'separator' },
     {
       // D-BP154-074/BISHOP-SEG/S74/seg-ambient -- lets the Founder retrieve (or rotate) the key
@@ -3231,10 +3217,10 @@ function registerIPCHandlers(): void {
 
   ipcMain.on('hide-overlay', () => { overlayWindow?.hide(); });
 
+  // 0.9.41: the overlay is removed; a renderer asking to show it is ignored (this was the path
+  // that surfaced it after every install).
   ipcMain.on('show-overlay', () => {
-    if (!overlayWindow) createOverlayWindow();
-    overlayWindow?.setOpacity(1.0);
-    overlayWindow?.showInactive();
+    console.log('[overlay] show-overlay ignored: overlay removed in 0.9.41');
   });
 
   // SEG-Q-3 BP078: DevTools toggle via renderer button (fallback when Ctrl+Shift+D conflicts)
@@ -11135,9 +11121,7 @@ app.whenReady().then(async () => {
   // 'ambient-capture-pulse' additionally lets FrameModeIndicator.tsx (via App.tsx) flash the
   // border once per capture -- see that component's own D-BP154-074 addition.
   registerAmbientCaptureNotifier((event) => {
-    if (!overlayWindow) createOverlayWindow();
-    overlayWindow?.showInactive();
-    overlayWindow?.webContents.send('ambient-capture-pulse', event);
+    // 0.9.41: no overlay is created or shown for a capture; the dashboard still gets the pulse.
     dashboardWindow?.webContents.send('ambient-capture-pulse', event);
     console.log(`[AmbientCapture] indicator pulse (${event.surface}): "${event.query.slice(0, 60)}"`);
   });
